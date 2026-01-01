@@ -1,0 +1,31 @@
+[package]
+name = "WEngine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "WEngine"
+path = "src/lib.rs"
+
+[dependencies]
+winit = { version = "0.30"}
+env_logger = "0.10"
+log = "0.4"
+wgpu = "27.0.0"
+pollster = "0.3"
+bytemuck = { version = "1.24", features = [ "derive" ] }
+cgmath = "0.18.0"
+anyhow = "1.0"
+fs_extra = "1.2"
+glob = "0.3"
+tobj = { version = "3.2", default-features = false, features = ["async"]}
+
+[dependencies.image]
+version = "0.24"
+default-features = false
+features = ["png", "jpeg"]
+
+[build-dependencies]
+anyhow = "1.0"
+fs_extra = "1.2"
+glob = "0.3"

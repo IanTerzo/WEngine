@@ -1,0 +1,14 @@
+[package]
+name = "Game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+WEngine = { path = "../WEngine" }
+anyhow = "1.0.100"
+cgmath = "0.18.0"
+winit = "0.30.12"
+
+[[bin]]
+name = "game"
+path = "src/main.rs"
