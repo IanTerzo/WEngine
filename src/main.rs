@@ -1,4 +1,5 @@
-use Engine::State;
+use Engine::{State, Transform, Vertex};
+use cgmath::Rotation3;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -69,7 +70,78 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        self.state = Some(pollster::block_on(State::new(window)).unwrap());
+        let mut state = pollster::block_on(State::new(window.clone())).unwrap();
+
+        let vertices: &[Vertex] = &[
+            // front
+            Vertex {
+                position: [-1.0, -1.0, 1.0],
+                tex_coords: [0.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, 1.0],
+                tex_coords: [1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, 1.0],
+                tex_coords: [1.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, 1.0],
+                tex_coords: [0.0, 1.0],
+            },
+            // back
+            Vertex {
+                position: [-1.0, -1.0, -1.0],
+                tex_coords: [1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, -1.0],
+                tex_coords: [0.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, -1.0],
+                tex_coords: [0.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, -1.0],
+                tex_coords: [1.0, 1.0],
+            },
+        ];
+
+        let indices: &[u16] = &[
+            0, 1, 2, 2, 3, 0, // front
+            1, 5, 6, 6, 2, 1, // right
+            5, 4, 7, 7, 6, 5, // back
+            4, 0, 3, 3, 7, 4, // left
+            3, 2, 6, 6, 7, 3, // top
+            4, 5, 1, 1, 0, 4, // bottom
+        ];
+
+        let material = state.load_material();
+
+        let mesh = state.add_mesh(vertices, indices, material);
+
+        state.add_instance(
+            mesh,
+            Transform {
+                position: cgmath::vec3(0.0, 0.0, -2.0), // 2 units in front of camera
+                rotation: cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0)), // no rotation
+                scale: cgmath::vec3(1.0, 1.0, 1.0),     // normal size
+            },
+        );
+
+        state.add_instance(
+            mesh,
+            Transform {
+                position: cgmath::vec3(0.0, 2.0, -2.0), // 2 units in front of camera
+                rotation: cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0)), // no rotation
+                scale: cgmath::vec3(0.5, 0.5, 0.5),     // normal size
+            },
+        );
+
+        // Store state
+        self.state = Some(state);
     }
 
     #[allow(unused_mut)]
