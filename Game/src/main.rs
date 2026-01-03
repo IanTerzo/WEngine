@@ -1,7 +1,9 @@
-use cgmath::Rotation3;
+use nalgebra::{self, vector, UnitQuaternion, Vector3};
+use rand::random_range;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use WEngine::{
-    model::{InstanceHandle, Transform},
+    model::{MeshHandle, Transform},
+    physics::Body,
     CameraInfo, EngineEvent, Game, Runner, Scene,
 };
 
@@ -16,8 +18,7 @@ struct CameraController {
 struct MyGame {
     camera: CameraInfo,
     camera_controller: CameraController,
-    cube_instance: Option<InstanceHandle>,
-    cube_rotation: f32,
+    cube_mesh: Option<MeshHandle>,
 }
 
 impl MyGame {
@@ -31,48 +32,35 @@ impl MyGame {
                 is_left_pressed: false,
                 is_right_pressed: false,
             },
-            cube_instance: None,
-            cube_rotation: 0.0,
+            cube_mesh: None,
         }
     }
 }
 
 impl Game for MyGame {
     fn on_init(&mut self, scene: &mut Scene) {
-        let model = scene
+        scene.grab_cursor();
+        let cube_mesh = scene
             .load_obj("/home/ianterzo/Work/WEngine/res/cube.obj")
-            .unwrap();
+            .unwrap()[0];
 
-        let handle = scene.instantiate(
-            model[0],
-            Transform {
-                position: cgmath::vec3(0.0, 0.0, 0.0),
-                rotation: cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0)),
-                scale: cgmath::vec3(1.0, 1.0, 1.0),
-            },
+        scene.spawn(
+            Body::static_body(
+                cube_mesh,
+                Transform {
+                    position: vector![0.0, -10.0, 0.0],
+                    rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32)
+                        .into_inner(),
+                    scale: vector![10.0, 1.0, 10.0],
+                },
+            )
+            .collider_cuboid(vector![10.0, 1.0, 10.0]),
         );
 
-        self.cube_instance = Some(handle);
-
-        // Load a teapot for reference
-
-        let model = scene
-            .load_obj("/home/ianterzo/Work/WEngine/res/teapot.obj")
-            .unwrap();
-
-        let _ = scene.instantiate(
-            model[0],
-            Transform {
-                position: cgmath::vec3(0.0, 0.0, -4.0),
-                rotation: cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0)),
-                scale: cgmath::vec3(1.0, 1.0, 1.0),
-            },
-        );
+        self.cube_mesh = Some(cube_mesh);
     }
 
     fn on_update(&mut self, delta: f32, scene: &mut Scene) {
-        use cgmath::InnerSpace;
-
         let forward = self.camera.target - self.camera.eye;
         let forward_norm = forward.normalize();
         let forward_mag = forward.magnitude();
@@ -86,41 +74,30 @@ impl Game for MyGame {
             self.camera.eye -= forward_norm * self.camera_controller.speed;
         }
 
-        let right = forward_norm.cross(self.camera.up);
+        let right = forward_norm.cross(&self.camera.up);
 
         // Redo radius calc in case the forward/backward is pressed.
         let forward = self.camera.target - self.camera.eye;
         let forward_mag = forward.magnitude();
 
+        let speed = self.camera_controller.speed as f32;
+
         if self.camera_controller.is_right_pressed {
             // Rescale the distance between the target and the eye so
             // that it doesn't change. The eye, therefore, still
             // lies on the circle made by the target and eye.
-            self.camera.eye = self.camera.target
-                - (forward + right * self.camera_controller.speed).normalize() * forward_mag;
+            self.camera.eye =
+                self.camera.target - (forward - right * speed).normalize() * forward_mag
         }
         if self.camera_controller.is_left_pressed {
-            self.camera.eye = self.camera.target
-                - (forward - right * self.camera_controller.speed).normalize() * forward_mag;
+            self.camera.eye =
+                self.camera.target - (forward + right * speed).normalize() * forward_mag;
         }
 
         scene.update_camera(&self.camera);
-
-        // Rotate the cube
-        if let Some(handle) = self.cube_instance {
-            self.cube_rotation += delta * 80.0;
-            scene.update_instance(
-                handle,
-                Transform {
-                    position: cgmath::vec3(0.0, 0.0, 0.0),
-                    rotation: cgmath::Quaternion::from_angle_y(cgmath::Deg(self.cube_rotation)),
-                    scale: cgmath::vec3(1.0, 1.0, 1.0),
-                },
-            );
-        }
     }
 
-    fn on_event(&mut self, event: EngineEvent, _scene: &mut Scene) {
+    fn on_event(&mut self, event: EngineEvent, scene: &mut Scene) {
         match event {
             EngineEvent::Key {
                 physical_key,
@@ -138,6 +115,33 @@ impl Game for MyGame {
                     }
                     KeyCode::KeyD | KeyCode::ArrowRight => {
                         self.camera_controller.is_right_pressed = pressed;
+                    }
+                    KeyCode::KeyQ => {
+                        if !pressed {
+                            return;
+                        }
+
+                        if let Some(cube_mesh) = self.cube_mesh {
+                            scene.spawn(
+                                Body::dynamic(
+                                    cube_mesh,
+                                    Transform {
+                                        position: vector![
+                                            random_range(-5..5) as f32,
+                                            0.0,
+                                            random_range(-5..5) as f32
+                                        ],
+                                        rotation: UnitQuaternion::from_axis_angle(
+                                            &Vector3::y_axis(),
+                                            0.0f32,
+                                        )
+                                        .into_inner(),
+                                        scale: vector![1.0, 1.0, 1.0],
+                                    },
+                                )
+                                .collider_cuboid(vector![1.0, 1.0, 1.0]),
+                            );
+                        }
                     }
                     _ => {}
                 },

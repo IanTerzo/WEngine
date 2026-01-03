@@ -1,8 +1,9 @@
 use bytemuck::{Pod, Zeroable};
-use cgmath::{Quaternion, Vector3};
+use nalgebra::{Matrix4, Quaternion, Translation3, UnitQuaternion, Vector3};
 
 use crate::texture;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transform {
     pub position: Vector3<f32>,
     pub rotation: Quaternion<f32>,
@@ -10,11 +11,12 @@ pub struct Transform {
 }
 
 impl Transform {
-    pub fn to_matrix(&self) -> cgmath::Matrix4<f32> {
-        let translation = cgmath::Matrix4::from_translation(self.position);
-        let rotation = cgmath::Matrix4::from(self.rotation);
-        let scale =
-            cgmath::Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z);
+    pub fn to_matrix(&self) -> Matrix4<f32> {
+        let translation = Translation3::from(self.position).to_homogeneous();
+        // make sure the quaternion is treated as a rotation
+        let rotation = UnitQuaternion::from_quaternion(self.rotation).to_homogeneous();
+        let scale = Matrix4::new_nonuniform_scaling(&self.scale);
+
         translation * rotation * scale
     }
 }

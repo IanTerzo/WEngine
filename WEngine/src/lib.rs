@@ -1,31 +1,41 @@
-use crate::model::{
-    Instance, InstanceHandle, InstanceRaw, Material, Mesh, MeshData, MeshHandle, ModelVertex,
-    Transform,
+use crate::{
+    model::{
+        Instance, InstanceHandle, InstanceRaw, Material, Mesh, MeshData, MeshHandle, ModelVertex,
+        Transform,
+    },
+    physics::{Body, ColliderConfig, DynamicBody, KinematicBody, PhysicsWorld, StaticBody},
 };
+use nalgebra::{self, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
+use rapier3d::prelude::{ColliderBuilder, RigidBodyHandle};
 use std::{fs::File, io::BufReader, path::Path, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::{
-    application::ApplicationHandler, event::*, event_loop::ActiveEventLoop, event_loop::EventLoop,
-    keyboard::KeyCode, keyboard::PhysicalKey, window::Window,
+    application::ApplicationHandler,
+    dpi::PhysicalPosition,
+    event::*,
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::Window,
 };
 
 pub mod model;
+pub mod physics;
 pub mod texture;
 
 const MAX_INSTANCES: usize = 100;
 
 #[rustfmt::skip]
-const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
-    cgmath::Vector4::new(1.0, 0.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 1.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 1.0),
+pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.0,
+    0.0, 0.0, 0.5, 1.0,
 );
 
 pub struct CameraInfo {
-    pub eye: cgmath::Point3<f32>,
-    pub target: cgmath::Point3<f32>,
-    pub up: cgmath::Vector3<f32>,
+    pub eye: Point3<f32>,
+    pub target: Point3<f32>,
+    pub up: Vector3<f32>,
     pub aspect: f32,
     pub fovy: f32,
     pub znear: f32,
@@ -35,9 +45,9 @@ pub struct CameraInfo {
 impl Default for CameraInfo {
     fn default() -> Self {
         Self {
-            eye: (0.0, 3.0, 5.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: cgmath::Vector3::unit_y(),
+            eye: Point3::new(0.0, 3.0, 5.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::y(),
             aspect: 16.0 / 9.0,
             fovy: 45.0,
             znear: 0.1,
@@ -47,9 +57,12 @@ impl Default for CameraInfo {
 }
 
 impl CameraInfo {
-    fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
-        let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
-        let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
+    pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
+        let view = Matrix4::look_at_rh(&self.eye, &self.target, &self.up);
+
+        let proj = Perspective3::new(self.aspect, self.fovy.to_radians(), self.znear, self.zfar)
+            .to_homogeneous();
+
         OPENGL_TO_WGPU_MATRIX * proj * view
     }
 }
@@ -62,15 +75,19 @@ struct CameraUniform {
 
 impl CameraUniform {
     fn new() -> Self {
-        use cgmath::SquareMatrix;
         Self {
-            view_proj: cgmath::Matrix4::identity().into(),
+            view_proj: Matrix4::identity().into(),
         }
     }
 
     fn update_view_proj(&mut self, camera: &CameraInfo) {
         self.view_proj = camera.build_view_projection_matrix().into();
     }
+}
+
+pub struct RigidBodyData {
+    instance_handle: InstanceHandle,
+    rigid_body_handle: RigidBodyHandle,
 }
 
 pub struct EngineState {
@@ -87,6 +104,10 @@ pub struct EngineState {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     meshes: Vec<MeshData>,
     camera_uniform: CameraUniform,
+    physics_world: PhysicsWorld,
+    rigid_bodies: Vec<RigidBodyData>,
+    last_mouse_position: Option<PhysicalPosition<f64>>,
+    cursor_grabbed: bool,
 }
 
 impl EngineState {
@@ -242,6 +263,8 @@ impl EngineState {
             cache: None,
         });
 
+        let physics_world = PhysicsWorld::new();
+
         Ok(Self {
             surface,
             device,
@@ -256,6 +279,10 @@ impl EngineState {
             texture_bind_group_layout,
             meshes: vec![],
             camera_uniform,
+            physics_world,
+            rigid_bodies: vec![],
+            last_mouse_position: None,
+            cursor_grabbed: false,
         })
     }
 
@@ -442,6 +469,126 @@ impl EngineState {
         }
     }
 
+    pub fn spawn(&mut self, body: impl Into<Body>) -> RigidBodyHandle {
+        let body = body.into();
+
+        match body {
+            Body::Dynamic(dynamic) => self.spawn_dynamic(dynamic),
+            Body::Static(static_body) => self.spawn_static(static_body),
+            Body::Kinematic(kinematic) => self.spawn_kinematic(kinematic),
+        }
+    }
+
+    fn spawn_dynamic(&mut self, body: DynamicBody) -> RigidBodyHandle {
+        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
+        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
+            axis.into_inner() * angle
+        } else {
+            Vector3::zeros()
+        };
+
+        let rigid_body = rapier3d::prelude::RigidBodyBuilder::dynamic()
+            .translation(body.transform.position)
+            .rotation(axis_angle)
+            .linvel(body.linear_velocity)
+            .angvel(body.angular_velocity)
+            .additional_mass(body.mass)
+            .linear_damping(body.linear_damping)
+            .angular_damping(body.angular_damping)
+            .gravity_scale(body.gravity_scale)
+            .can_sleep(body.can_sleep)
+            .build();
+
+        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+    }
+
+    fn spawn_static(&mut self, body: StaticBody) -> RigidBodyHandle {
+        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
+        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
+            axis.into_inner() * angle
+        } else {
+            Vector3::zeros()
+        };
+
+        let rigid_body = rapier3d::prelude::RigidBodyBuilder::fixed()
+            .translation(body.transform.position)
+            .rotation(axis_angle)
+            .build();
+
+        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+    }
+
+    fn spawn_kinematic(&mut self, body: KinematicBody) -> RigidBodyHandle {
+        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
+        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
+            axis.into_inner() * angle
+        } else {
+            Vector3::zeros()
+        };
+
+        let rigid_body = rapier3d::prelude::RigidBodyBuilder::kinematic_position_based()
+            .translation(body.transform.position)
+            .rotation(axis_angle)
+            .linvel(body.linear_velocity)
+            .angvel(body.angular_velocity)
+            .build();
+
+        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+    }
+
+    fn insert_body_and_collider(
+        &mut self,
+        mesh_handle: MeshHandle,
+        transform: Transform,
+        collider_config: ColliderConfig,
+        rigid_body: rapier3d::prelude::RigidBody,
+    ) -> RigidBodyHandle {
+        let mesh_data = self.meshes.get_mut(mesh_handle.0).unwrap();
+        mesh_data.instances.push(Instance { transform });
+
+        let rigid_body_handle = self.physics_world.rigid_body_set.insert(rigid_body);
+
+        let collider = match collider_config {
+            ColliderConfig::Ball { radius } => ColliderBuilder::ball(radius).build(),
+            ColliderConfig::Capsule {
+                half_height,
+                radius,
+            } => ColliderBuilder::capsule_y(half_height, radius).build(),
+            ColliderConfig::Cuboid { half_extents } => {
+                ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build()
+            }
+            ColliderConfig::Cylinder {
+                half_height,
+                radius,
+            } => ColliderBuilder::cylinder(half_height, radius).build(),
+            ColliderConfig::Custom(collider) => collider,
+        };
+
+        self.physics_world.collider_set.insert_with_parent(
+            collider,
+            rigid_body_handle,
+            &mut self.physics_world.rigid_body_set,
+        );
+
+        let instance_index = mesh_data.instances.len() - 1;
+        self.rigid_bodies.push(RigidBodyData {
+            instance_handle: InstanceHandle {
+                mesh: mesh_handle,
+                instance_index,
+            },
+            rigid_body_handle,
+        });
+
+        rigid_body_handle
+    }
+
+    pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
+        self.meshes
+            .get(handle.mesh.0)?
+            .instances
+            .get(handle.instance_index)
+    }
+
     pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
         if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
             if let Some(instance) = mesh_data.instances.get_mut(handle.instance_index) {
@@ -475,12 +622,6 @@ impl EngineState {
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth");
             self.surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
-        }
-    }
-
-    pub fn handle_key(&self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
-        if (code, is_pressed) == (KeyCode::Escape, true) {
-            event_loop.exit();
         }
     }
 
@@ -530,12 +671,12 @@ impl EngineState {
             rp.set_bind_group(1, &self.camera_bind_group, &[]);
 
             for mesh_data in &self.meshes {
-                let mesh = &mesh_data.mesh;
-
                 let instance_count = mesh_data.instances.len() as u32;
                 if instance_count == 0 {
-                    continue; // Skip if no instances
+                    continue; // Skip if no instances, Not really, or kinda?
                 }
+
+                let mesh = &mesh_data.mesh;
 
                 rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -555,7 +696,52 @@ impl EngineState {
     }
 
     pub fn update(&mut self) {
-        // remove `todo!()`
+        self.physics_world.step();
+
+        for i in 0..self.rigid_bodies.len() {
+            let rigid_body = &self.rigid_bodies[i];
+
+            let rigid_body_calc = self
+                .physics_world
+                .rigid_body_set
+                .get(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            let iso = rigid_body_calc.position();
+            let position: Vector3<f32> = iso.translation.vector;
+            let rotation = iso.rotation.into_inner();
+
+            let scale = self
+                .get_instance(rigid_body.instance_handle)
+                .unwrap()
+                .transform
+                .scale;
+
+            self.update_instance(
+                rigid_body.instance_handle,
+                Transform {
+                    position,
+                    rotation,
+                    scale,
+                },
+            );
+        }
+    }
+
+    pub fn grab_cursor(&mut self) {
+        self.cursor_grabbed = true;
+        let _ = self
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+        self.window.set_cursor_visible(false);
+    }
+
+    pub fn release_cursor(&mut self) {
+        self.cursor_grabbed = false;
+        let _ = self
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::None);
+        self.window.set_cursor_visible(true);
     }
 }
 
@@ -580,8 +766,24 @@ impl<'a> Scene<'a> {
         self.core.instantiate(handle, transform)
     }
 
+    pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
+        self.core.get_instance(handle)
+    }
+
     pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
         self.core.update_instance(handle, transform);
+    }
+
+    pub fn spawn(&mut self, body: impl Into<Body>) {
+        self.core.spawn(body);
+    }
+
+    pub fn grab_cursor(&mut self) {
+        self.core.grab_cursor();
+    }
+
+    pub fn release_cursor(&mut self) {
+        self.core.release_cursor();
     }
 }
 
@@ -590,11 +792,14 @@ pub enum EngineEvent {
         physical_key: PhysicalKey,
         pressed: bool,
     },
-    Resize {
-        width: u32,
-        height: u32,
+    MouseMotion {
+        delta_x: f64,
+        delta_y: f64,
     },
-    CloseRequested,
+    MouseButton {
+        button: winit::event::MouseButton,
+        pressed: bool,
+    },
 }
 
 pub trait Game {
@@ -681,11 +886,6 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
                     },
                 ..
             } => {
-                // engine still handles Escape etc.
-                if let PhysicalKey::Code(code) = physical_key {
-                    state.handle_key(event_loop, code, key_state.is_pressed());
-                }
-
                 let mut scene = Scene::new(state);
                 self.game.on_event(
                     EngineEvent::Key {
@@ -695,6 +895,35 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
                     &mut scene,
                 );
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                if state.cursor_grabbed {
+                    if let Some(last_pos) = state.last_mouse_position {
+                        let delta_x = position.x - last_pos.x;
+                        let delta_y = position.y - last_pos.y;
+
+                        let mut scene = Scene::new(state);
+                        self.game
+                            .on_event(EngineEvent::MouseMotion { delta_x, delta_y }, &mut scene);
+                    }
+                    state.last_mouse_position = Some(position);
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state: button_state,
+                button,
+                ..
+            } => {
+                let mut scene = Scene::new(state);
+                self.game.on_event(
+                    EngineEvent::MouseButton {
+                        button,
+                        pressed: button_state == ElementState::Pressed,
+                    },
+                    &mut scene,
+                );
+            }
+
             _ => {}
         }
     }
@@ -711,7 +940,6 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
             let mut scene = Scene::new(&mut state);
             self.game.on_init(&mut scene);
         }
-
         self.state = Some(state);
     }
 
