@@ -3,10 +3,15 @@ use crate::{
         Instance, InstanceHandle, InstanceRaw, Material, Mesh, MeshData, MeshHandle, ModelVertex,
         Transform,
     },
-    physics::{Body, ColliderConfig, DynamicBody, KinematicBody, PhysicsWorld, StaticBody},
+    physics::{
+        Camera, ColliderConfig, DynamicBody, Entity, KinematicBody, PhysicsWorld, StaticBody,
+    },
 };
-use nalgebra::{self, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
-use rapier3d::prelude::{ColliderBuilder, RigidBodyHandle};
+use nalgebra::{
+    self, Isometry, Matrix4, Perspective3, Point3, Quaternion, Translation3, UnitQuaternion,
+    Vector3,
+};
+use rapier3d::prelude::ColliderBuilder;
 use std::{fs::File, io::BufReader, path::Path, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -14,7 +19,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::*,
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::PhysicalKey,
     window::Window,
 };
 
@@ -42,52 +47,46 @@ pub struct CameraInfo {
     pub zfar: f32,
 }
 
-impl Default for CameraInfo {
-    fn default() -> Self {
-        Self {
-            eye: Point3::new(0.0, 3.0, 5.0),
-            target: Point3::new(0.0, 0.0, 0.0),
-            up: Vector3::y(),
-            aspect: 16.0 / 9.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-        }
-    }
-}
-
-impl CameraInfo {
-    pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
-        let view = Matrix4::look_at_rh(&self.eye, &self.target, &self.up);
-
-        let proj = Perspective3::new(self.aspect, self.fovy.to_radians(), self.znear, self.zfar)
-            .to_homogeneous();
-
-        OPENGL_TO_WGPU_MATRIX * proj * view
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
-impl CameraUniform {
-    fn new() -> Self {
-        Self {
-            view_proj: Matrix4::identity().into(),
-        }
-    }
-
-    fn update_view_proj(&mut self, camera: &CameraInfo) {
-        self.view_proj = camera.build_view_projection_matrix().into();
-    }
-}
-
 pub struct RigidBodyData {
     instance_handle: InstanceHandle,
-    rigid_body_handle: RigidBodyHandle,
+    rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
+}
+
+pub enum EntityData {
+    RigidBody(RigidBodyData),
+    Camera(),
+}
+
+pub struct CameraState {
+    pub transform: Transform,
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+pub enum EntityState {
+    Camera(CameraState),
+    None, // TODO
+}
+
+// After spawning the entity, we store it's "entityInfo", which contains the actual information that is used for rendering.
+// Data contains information only relevant to the engine, and entity_state contains info that is also relevant to the user and is the user facing part.
+pub struct EntityInfo {
+    data: EntityData,
+    pub state: EntityState,
+    pub children: Vec<EntityInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EntityHandle {
+    root: usize,
+    path: Vec<usize>,
 }
 
 pub struct EngineState {
@@ -105,7 +104,7 @@ pub struct EngineState {
     meshes: Vec<MeshData>,
     camera_uniform: CameraUniform,
     physics_world: PhysicsWorld,
-    rigid_bodies: Vec<RigidBodyData>,
+    entities: Vec<EntityInfo>,
     last_mouse_position: Option<PhysicalPosition<f64>>,
     cursor_grabbed: bool,
 }
@@ -155,7 +154,9 @@ impl EngineState {
 
         // Create camera
 
-        let camera_uniform = CameraUniform::new();
+        let camera_uniform = CameraUniform {
+            view_proj: Matrix4::identity().into(),
+        };
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
@@ -280,7 +281,7 @@ impl EngineState {
             meshes: vec![],
             camera_uniform,
             physics_world,
-            rigid_bodies: vec![],
+            entities: vec![],
             last_mouse_position: None,
             cursor_grabbed: false,
         })
@@ -469,17 +470,48 @@ impl EngineState {
         }
     }
 
-    pub fn spawn(&mut self, body: impl Into<Body>) -> RigidBodyHandle {
-        let body = body.into();
+    fn get_entity_from_handle(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
+        let mut entity = &mut self.entities[entity_handle.root];
 
-        match body {
-            Body::Dynamic(dynamic) => self.spawn_dynamic(dynamic),
-            Body::Static(static_body) => self.spawn_static(static_body),
-            Body::Kinematic(kinematic) => self.spawn_kinematic(kinematic),
+        for &index in &entity_handle.path {
+            entity = &mut entity.children[index];
+        }
+
+        entity
+    }
+
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
+        self.get_entity_from_handle(entity_handle)
+    }
+
+    pub fn get_children(&mut self, entity_handle: EntityHandle) -> &mut Vec<EntityInfo> {
+        &mut self.get_entity_from_handle(entity_handle).children
+    }
+
+    pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
+        let entity = self.create(entity);
+        self.entities.push(entity);
+
+        let entity_index = self.entities.len() - 1;
+
+        EntityHandle {
+            root: entity_index,
+            path: vec![],
         }
     }
 
-    fn spawn_dynamic(&mut self, body: DynamicBody) -> RigidBodyHandle {
+    fn create(&mut self, entity: impl Into<Entity>) -> EntityInfo {
+        let entity = entity.into();
+
+        match entity {
+            Entity::Dynamic(dynamic) => self.create_dynamic_rigidbody(dynamic),
+            Entity::Static(static_body) => self.create_static_rigidbody(static_body),
+            Entity::Kinematic(kinematic) => self.create_kinematic_rigidbody(kinematic),
+            Entity::Camera(camera) => self.create_camera(camera),
+        }
+    }
+
+    fn create_dynamic_rigidbody(&mut self, body: DynamicBody) -> EntityInfo {
         let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
         let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
             axis.into_inner() * angle
@@ -499,10 +531,16 @@ impl EngineState {
             .can_sleep(body.can_sleep)
             .build();
 
-        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+        self.create_rigidbody(
+            body.mesh_handle,
+            body.transform,
+            body.collider,
+            body.children,
+            rigid_body,
+        )
     }
 
-    fn spawn_static(&mut self, body: StaticBody) -> RigidBodyHandle {
+    fn create_static_rigidbody(&mut self, body: StaticBody) -> EntityInfo {
         let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
         let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
             axis.into_inner() * angle
@@ -515,10 +553,16 @@ impl EngineState {
             .rotation(axis_angle)
             .build();
 
-        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+        self.create_rigidbody(
+            body.mesh_handle,
+            body.transform,
+            body.collider,
+            body.children,
+            rigid_body,
+        )
     }
 
-    fn spawn_kinematic(&mut self, body: KinematicBody) -> RigidBodyHandle {
+    fn create_kinematic_rigidbody(&mut self, body: KinematicBody) -> EntityInfo {
         let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
         let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
             axis.into_inner() * angle
@@ -533,16 +577,23 @@ impl EngineState {
             .angvel(body.angular_velocity)
             .build();
 
-        self.insert_body_and_collider(body.mesh_handle, body.transform, body.collider, rigid_body)
+        self.create_rigidbody(
+            body.mesh_handle,
+            body.transform,
+            body.collider,
+            body.children,
+            rigid_body,
+        )
     }
 
-    fn insert_body_and_collider(
+    fn create_rigidbody(
         &mut self,
         mesh_handle: MeshHandle,
         transform: Transform,
         collider_config: ColliderConfig,
+        children: Vec<Entity>,
         rigid_body: rapier3d::prelude::RigidBody,
-    ) -> RigidBodyHandle {
+    ) -> EntityInfo {
         let mesh_data = self.meshes.get_mut(mesh_handle.0).unwrap();
         mesh_data.instances.push(Instance { transform });
 
@@ -571,15 +622,60 @@ impl EngineState {
         );
 
         let instance_index = mesh_data.instances.len() - 1;
-        self.rigid_bodies.push(RigidBodyData {
-            instance_handle: InstanceHandle {
-                mesh: mesh_handle,
-                instance_index,
-            },
-            rigid_body_handle,
-        });
 
-        rigid_body_handle
+        let child_infos: Vec<_> = children
+            .into_iter()
+            .map(|child| self.create(child))
+            .collect();
+
+        EntityInfo {
+            data: EntityData::RigidBody(RigidBodyData {
+                instance_handle: InstanceHandle {
+                    mesh: mesh_handle,
+                    instance_index,
+                },
+                rigid_body_handle,
+            }),
+            state: EntityState::None,
+            children: child_infos,
+        }
+    }
+
+    fn create_camera(&mut self, camera: Camera) -> EntityInfo {
+        // Start by placing the camera at the spawned position
+
+        let iso = Isometry::from_parts(
+            Translation3::from(camera.transform.position),
+            UnitQuaternion::from_quaternion(camera.transform.rotation),
+        );
+
+        let view = iso.inverse().to_homogeneous();
+
+        let aspect = self.config.width as f32 / self.config.height as f32;
+
+        let proj = Perspective3::new(aspect, camera.fov.to_radians(), camera.near, camera.far)
+            .to_homogeneous();
+
+        self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
+
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+
+        // Then we create the camera entity
+
+        EntityInfo {
+            data: EntityData::Camera(),
+            state: EntityState::Camera(CameraState {
+                transform: camera.transform,
+                fov: camera.fov,
+                near: camera.near,
+                far: camera.far,
+            }),
+            children: vec![],
+        }
     }
 
     pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
@@ -606,14 +702,6 @@ impl EngineState {
         }
     }
 
-    pub fn update_camera(&mut self, camera: &CameraInfo) {
-        self.camera_uniform.update_view_proj(camera);
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&[self.camera_uniform]),
-        );
-    }
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.config.width = width;
@@ -695,36 +783,130 @@ impl EngineState {
         Ok(())
     }
 
+    pub fn rigid_body_trickle_down_update(
+        &mut self,
+        entity_info: &EntityInfo,
+        parent_position: Vector3<f32>,
+        parent_rotation: Quaternion<f32>,
+    ) {
+        // We want to update all non rigidbody children with the physics of the parent rigidbody.
+        match &entity_info.data {
+            EntityData::RigidBody(rigid_body) => {
+                let rigid_body_calc = self
+                    .physics_world
+                    .rigid_body_set
+                    .get(rigid_body.rigid_body_handle)
+                    .unwrap();
+
+                let iso = rigid_body_calc.position();
+                let position: Vector3<f32> = iso.translation.vector;
+                let rotation = iso.rotation.into_inner();
+
+                let scale = self
+                    .get_instance(rigid_body.instance_handle)
+                    .unwrap()
+                    .transform
+                    .scale;
+
+                // We apply the physics of the parent rigidbody on all children
+                for child in &entity_info.children {
+                    self.rigid_body_trickle_down_update(child, position, rotation);
+                }
+
+                self.update_instance(
+                    rigid_body.instance_handle,
+                    Transform {
+                        position,
+                        rotation,
+                        scale,
+                    },
+                );
+            }
+            EntityData::Camera() => {
+                // Can't panic
+                let EntityState::Camera(camera_state) = &entity_info.state else {
+                    panic!();
+                };
+
+                let iso = Isometry::from_parts(
+                    Translation3::from(parent_position + camera_state.transform.position),
+                    UnitQuaternion::from_quaternion(camera_state.transform.rotation),
+                );
+
+                let view = iso.inverse().to_homogeneous();
+
+                let aspect = self.config.width as f32 / self.config.height as f32;
+
+                let proj = Perspective3::new(
+                    aspect,
+                    camera_state.fov.to_radians(),
+                    camera_state.near,
+                    camera_state.far,
+                )
+                .to_homogeneous();
+
+                self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
+
+                self.queue.write_buffer(
+                    &self.camera_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.camera_uniform]),
+                );
+            }
+        }
+    }
+
     pub fn update(&mut self) {
         self.physics_world.step();
 
-        for i in 0..self.rigid_bodies.len() {
-            let rigid_body = &self.rigid_bodies[i];
+        for i in 0..self.entities.len() {
+            let (position, rotation, scale, instance_handle) = {
+                let entity_info = &self.entities[i];
 
-            let rigid_body_calc = self
-                .physics_world
-                .rigid_body_set
-                .get(rigid_body.rigid_body_handle)
-                .unwrap();
+                match &entity_info.data {
+                    EntityData::RigidBody(rigid_body) => {
+                        let rigid_body_calc = self
+                            .physics_world
+                            .rigid_body_set
+                            .get(rigid_body.rigid_body_handle)
+                            .unwrap();
 
-            let iso = rigid_body_calc.position();
-            let position: Vector3<f32> = iso.translation.vector;
-            let rotation = iso.rotation.into_inner();
+                        let iso = rigid_body_calc.position();
+                        let position: Vector3<f32> = iso.translation.vector;
+                        let rotation = iso.rotation.into_inner();
 
-            let scale = self
-                .get_instance(rigid_body.instance_handle)
-                .unwrap()
-                .transform
-                .scale;
+                        let scale = self
+                            .get_instance(rigid_body.instance_handle)
+                            .unwrap()
+                            .transform
+                            .scale;
 
-            self.update_instance(
-                rigid_body.instance_handle,
-                Transform {
-                    position,
-                    rotation,
-                    scale,
-                },
-            );
+                        (position, rotation, scale, Some(rigid_body.instance_handle))
+                    }
+                    _ => continue,
+                }
+            };
+
+            if let Some(handle) = instance_handle {
+                let children = std::mem::take(&mut self.entities[i].children);
+
+                // If the entity is a RigidBody, we also apply the physics calculations to it's children.
+
+                for child in &children {
+                    self.rigid_body_trickle_down_update(child, position, rotation);
+                }
+
+                self.entities[i].children = children;
+
+                self.update_instance(
+                    handle,
+                    Transform {
+                        position,
+                        rotation,
+                        scale,
+                    },
+                );
+            }
         }
     }
 
@@ -754,10 +936,6 @@ impl<'a> Scene<'a> {
         Self { core: state }
     }
 
-    pub fn update_camera(&mut self, camera: &CameraInfo) {
-        self.core.update_camera(camera);
-    }
-
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
         self.core.load_obj(path)
     }
@@ -774,8 +952,12 @@ impl<'a> Scene<'a> {
         self.core.update_instance(handle, transform);
     }
 
-    pub fn spawn(&mut self, body: impl Into<Body>) {
-        self.core.spawn(body);
+    pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
+        self.core.spawn(entity)
+    }
+
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
+        self.core.get_entity(entity_handle)
     }
 
     pub fn grab_cursor(&mut self) {

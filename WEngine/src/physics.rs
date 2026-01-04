@@ -1,10 +1,7 @@
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::Vector3;
 use rapier3d::prelude::*;
 
-use crate::{
-    EngineState, RigidBodyData,
-    model::{Instance, InstanceHandle, MeshHandle, Transform},
-};
+use crate::model::{MeshHandle, Transform};
 
 pub struct PhysicsWorld {
     pub gravity: nalgebra::Vector3<f32>,
@@ -62,9 +59,11 @@ pub enum ColliderConfig {
     Cylinder { half_height: f32, radius: f32 },
     Custom(rapier3d::prelude::Collider),
 }
+
 pub struct DynamicBody {
     pub mesh_handle: MeshHandle,
     pub transform: Transform,
+    pub children: Vec<Entity>,
     pub collider: ColliderConfig,
     pub linear_velocity: Vector3<f32>,
     pub angular_velocity: Vector3<f32>,
@@ -78,25 +77,34 @@ pub struct DynamicBody {
 pub struct StaticBody {
     pub mesh_handle: MeshHandle,
     pub transform: Transform,
+    pub children: Vec<Entity>,
     pub collider: ColliderConfig,
 }
 
 pub struct KinematicBody {
     pub mesh_handle: MeshHandle,
     pub transform: Transform,
+    pub children: Vec<Entity>,
     pub collider: ColliderConfig,
     pub linear_velocity: Vector3<f32>,
     pub angular_velocity: Vector3<f32>,
 }
 
-// Enum to pass to spawn
-pub enum Body {
+pub struct Camera {
+    pub transform: Transform,
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+pub enum Entity {
     Dynamic(DynamicBody),
     Static(StaticBody),
     Kinematic(KinematicBody),
+    Camera(Camera),
 }
 
-impl Body {
+impl Entity {
     pub fn dynamic(mesh_handle: MeshHandle, transform: Transform) -> DynamicBody {
         DynamicBody::new(mesh_handle, transform)
     }
@@ -108,6 +116,36 @@ impl Body {
     pub fn kinematic(mesh_handle: MeshHandle, transform: Transform) -> KinematicBody {
         KinematicBody::new(mesh_handle, transform)
     }
+
+    pub fn camera(transform: Transform) -> Camera {
+        Camera::new(transform)
+    }
+}
+
+impl Camera {
+    pub fn new(transform: Transform) -> Self {
+        Self {
+            transform,
+            fov: 45.0,
+            near: 0.1,
+            far: 100.0,
+        }
+    }
+
+    pub fn fov(mut self, fov: f32) -> Self {
+        self.fov = fov;
+        self
+    }
+
+    pub fn near(mut self, near: f32) -> Self {
+        self.near = near;
+        self
+    }
+
+    pub fn far(mut self, far: f32) -> Self {
+        self.far = far;
+        self
+    }
 }
 
 impl DynamicBody {
@@ -115,6 +153,7 @@ impl DynamicBody {
         Self {
             mesh_handle,
             transform,
+            children: vec![],
             collider: ColliderConfig::Ball { radius: 1.0 },
             linear_velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
@@ -124,6 +163,18 @@ impl DynamicBody {
             gravity_scale: 1.0,
             can_sleep: true,
         }
+    }
+
+    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+
+    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
+        for c in children {
+            self.children.push(c.into());
+        }
+        self
     }
 
     pub fn collider_ball(mut self, radius: f32) -> Self {
@@ -193,8 +244,21 @@ impl StaticBody {
         Self {
             mesh_handle,
             transform,
+            children: vec![],
             collider: ColliderConfig::Ball { radius: 1.0 },
         }
+    }
+
+    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+
+    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
+        for c in children {
+            self.children.push(c.into());
+        }
+        self
     }
 
     pub fn collider_ball(mut self, radius: f32) -> Self {
@@ -229,10 +293,23 @@ impl KinematicBody {
         Self {
             mesh_handle,
             transform,
+            children: vec![],
             collider: ColliderConfig::Ball { radius: 1.0 },
             linear_velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
         }
+    }
+
+    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+
+    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
+        for c in children {
+            self.children.push(c.into());
+        }
+        self
     }
 
     pub fn collider_ball(mut self, radius: f32) -> Self {
@@ -273,20 +350,26 @@ impl KinematicBody {
 }
 
 // Convert each type to the Body enum
-impl From<DynamicBody> for Body {
+impl From<DynamicBody> for Entity {
     fn from(body: DynamicBody) -> Self {
-        Body::Dynamic(body)
+        Entity::Dynamic(body)
     }
 }
 
-impl From<StaticBody> for Body {
+impl From<StaticBody> for Entity {
     fn from(body: StaticBody) -> Self {
-        Body::Static(body)
+        Entity::Static(body)
     }
 }
 
-impl From<KinematicBody> for Body {
+impl From<KinematicBody> for Entity {
     fn from(body: KinematicBody) -> Self {
-        Body::Kinematic(body)
+        Entity::Kinematic(body)
+    }
+}
+
+impl From<Camera> for Entity {
+    fn from(camera: Camera) -> Self {
+        Entity::Camera(camera)
     }
 }
