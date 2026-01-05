@@ -2,33 +2,23 @@ use nalgebra::{self, vector, UnitQuaternion, Vector3};
 use rand::random_range;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use WEngine::{
-    model::{MeshHandle, Transform},
-    physics::Entity,
-    CameraState, EngineEvent, EntityHandle, EntityState, Game, Runner, Scene,
+    entity::{CameraState, Entity, EntityHandle, EntityState},
+    model::MeshHandle,
+    EngineEvent, Game, Runner, Scene, Transform,
 };
 
 struct CameraController {
-    speed: f32,
     sensitivity: f32,
-    yaw: f32,   // Rotation around Y axis
-    pitch: f32, // Rotation around X axis
-    is_forward_pressed: bool,
-    is_backward_pressed: bool,
-    is_left_pressed: bool,
-    is_right_pressed: bool,
+    yaw: f32,
+    pitch: f32,
 }
 
 impl CameraController {
     fn new() -> Self {
         Self {
-            speed: 0.2,
             sensitivity: 0.002,
             yaw: 0.0,
             pitch: 0.0,
-            is_backward_pressed: false,
-            is_forward_pressed: false,
-            is_left_pressed: false,
-            is_right_pressed: false,
         }
     }
 
@@ -36,21 +26,72 @@ impl CameraController {
         self.yaw -= delta_x as f32 * self.sensitivity;
         self.pitch -= delta_y as f32 * self.sensitivity;
 
-        // Clamp pitch to prevent camera flipping
+        // Clamp pitch to prevent camera flipping, but allow yaw to wrap around
         self.pitch = self
             .pitch
             .clamp(-89.0f32.to_radians(), 89.0f32.to_radians());
+
+        // Normalize yaw to keep it within 0 to 2π (optional, prevents float overflow)
+        use std::f32::consts::TAU;
+        self.yaw = self.yaw.rem_euclid(TAU);
     }
 
-    fn get_rotation(&self) -> nalgebra::Quaternion<f32> {
+    fn get_rotation(&self) -> UnitQuaternion<f32> {
         let yaw_quat = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.yaw);
         let pitch_quat = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.pitch);
-        (yaw_quat * pitch_quat).into_inner()
+        yaw_quat * pitch_quat
+    }
+}
+
+struct PlayerController {
+    speed: f32,
+    jump_force: f32,
+    is_forward_pressed: bool,
+    is_backward_pressed: bool,
+    is_left_pressed: bool,
+    is_right_pressed: bool,
+}
+
+impl PlayerController {
+    fn new(speed: f32) -> Self {
+        Self {
+            speed,
+            jump_force: 40.0,
+            is_forward_pressed: false,
+            is_backward_pressed: false,
+            is_left_pressed: false,
+            is_right_pressed: false,
+        }
+    }
+
+    fn get_movement_direction(&self, rotation: UnitQuaternion<f32>) -> Vector3<f32> {
+        let mut velocity = vector![0.0, 0.0, 0.0];
+
+        if self.is_forward_pressed {
+            velocity += get_forward(rotation);
+        }
+        if self.is_backward_pressed {
+            velocity -= get_forward(rotation);
+        }
+        if self.is_left_pressed {
+            velocity += get_left(rotation);
+        }
+        if self.is_right_pressed {
+            velocity += get_right(rotation);
+        }
+
+        // Normalize to prevent faster diagonal movement
+        if velocity.magnitude() > 0.0 {
+            velocity = velocity.normalize() * self.speed;
+        }
+
+        velocity
     }
 }
 
 struct MyGame {
     camera_controller: CameraController,
+    player_controller: PlayerController,
     cube_mesh: Option<MeshHandle>,
     player_entity: Option<EntityHandle>,
     cursor_grabbed: bool,
@@ -60,11 +101,24 @@ impl MyGame {
     fn new() -> Self {
         Self {
             camera_controller: CameraController::new(),
+            player_controller: PlayerController::new(10.0), // Default speed of 5.0
             cube_mesh: None,
             player_entity: None,
             cursor_grabbed: false,
         }
     }
+}
+
+fn get_forward(rotation: UnitQuaternion<f32>) -> Vector3<f32> {
+    rotation * vector![0.0, 0.0, -1.0]
+}
+
+fn get_right(rotation: UnitQuaternion<f32>) -> Vector3<f32> {
+    rotation * vector![1.0, 0.0, 0.0]
+}
+
+fn get_left(rotation: UnitQuaternion<f32>) -> Vector3<f32> {
+    rotation * vector![-1.0, 0.0, 0.0]
 }
 
 impl Game for MyGame {
@@ -75,41 +129,43 @@ impl Game for MyGame {
 
         // Ground
         scene.spawn(
-            Entity::static_body(
-                cube_mesh,
-                Transform {
-                    position: vector![0.0, -30.0, 0.0],
-                    rotation: UnitQuaternion::from_axis_angle(
-                        &Vector3::y_axis(),
-                        0.0f32.to_radians(),
-                    )
+            Entity::static_body(Transform {
+                position: vector![0.0, -30.0, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
-                    scale: vector![10.0, 1.0, 10.0],
-                },
-            )
-            .collider_cuboid(vector![10.0, 1.0, 10.0]),
+                scale: vector![10.0, 1.0, 10.0],
+            })
+            .collider_cuboid(vector![10.0, 1.0, 10.0])
+            .mesh(cube_mesh),
         );
 
         // Player with camera
         let player = scene.spawn(
-            Entity::dynamic(
-                cube_mesh,
-                Transform {
-                    position: vector![0.0, 0.0, 0.0],
-                    rotation: UnitQuaternion::from_axis_angle(
-                        &Vector3::y_axis(),
-                        0.0f32.to_radians(),
-                    )
+            Entity::dynamic_body(Transform {
+                position: vector![0.0, 0.0, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
-                    scale: vector![1.0, 1.0, 1.0],
-                },
-            )
+                scale: vector![1.0, 1.0, 1.0],
+            })
             .add_child(Entity::camera(Transform {
                 position: vector![0.0, 2.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
                 scale: vector![1.0, 1.0, 1.0],
-            })),
+            }))
+            .add_child(Entity::mesh_instance(
+                cube_mesh,
+                Transform {
+                    position: vector![2.0, 1.0, 0.0],
+                    rotation: UnitQuaternion::from_axis_angle(
+                        &Vector3::y_axis(),
+                        30.0f32.to_radians(),
+                    )
+                    .into_inner(),
+                    scale: vector![0.5, 0.5, 0.5],
+                },
+            ))
+            .collider_cuboid(vector![1.0, 1.0, 1.0]),
         );
 
         self.player_entity = Some(player);
@@ -120,7 +176,7 @@ impl Game for MyGame {
         self.cursor_grabbed = true;
     }
 
-    fn on_update(&mut self, delta: f32, scene: &mut Scene) {
+    fn on_update(&mut self, _delta: f32, scene: &mut Scene) {
         // Update camera rotation based on mouse input
         if let Some(player_handle) = &self.player_entity {
             if let EntityState::Camera(camera_state) =
@@ -129,7 +185,7 @@ impl Game for MyGame {
                 *camera_state = CameraState {
                     transform: Transform {
                         position: camera_state.transform.position,
-                        rotation: self.camera_controller.get_rotation(),
+                        rotation: self.camera_controller.get_rotation().into_inner(),
                         scale: camera_state.transform.scale,
                     },
                     fov: camera_state.fov,
@@ -137,6 +193,19 @@ impl Game for MyGame {
                     far: camera_state.far,
                 };
             }
+
+            // Calculate movement velocity
+            let rot = self.camera_controller.get_rotation();
+            let velocity = self.player_controller.get_movement_direction(rot);
+
+            // Get current velocity to preserve Y component (gravity/jumping)
+            let current_vel = scene.get_linvel(player_handle.clone());
+
+            // Set velocity - preserve Y for gravity, replace X and Z for movement
+            scene.set_linvel(
+                player_handle.clone(),
+                vector![velocity.x, current_vel.y, velocity.z],
+            );
         }
     }
 
@@ -148,16 +217,27 @@ impl Game for MyGame {
             } => match physical_key {
                 PhysicalKey::Code(code) => match code {
                     KeyCode::KeyW | KeyCode::ArrowUp => {
-                        self.camera_controller.is_forward_pressed = pressed;
+                        self.player_controller.is_forward_pressed = pressed;
                     }
                     KeyCode::KeyA | KeyCode::ArrowLeft => {
-                        self.camera_controller.is_left_pressed = pressed;
+                        self.player_controller.is_left_pressed = pressed;
                     }
                     KeyCode::KeyS | KeyCode::ArrowDown => {
-                        self.camera_controller.is_backward_pressed = pressed;
+                        self.player_controller.is_backward_pressed = pressed;
                     }
                     KeyCode::KeyD | KeyCode::ArrowRight => {
-                        self.camera_controller.is_right_pressed = pressed;
+                        self.player_controller.is_right_pressed = pressed;
+                    }
+                    KeyCode::Space => {
+                        if pressed {
+                            if let Some(player_handle) = &self.player_entity {
+                                // Apply upward impulse for jumping
+                                scene.apply_impulse(
+                                    player_handle.clone(),
+                                    vector![0.0, self.player_controller.jump_force, 0.0],
+                                );
+                            }
+                        }
                     }
                     KeyCode::KeyQ => {
                         if !pressed {
@@ -166,22 +246,20 @@ impl Game for MyGame {
 
                         if let Some(cube_mesh) = self.cube_mesh {
                             scene.spawn(
-                                Entity::dynamic(
-                                    cube_mesh,
-                                    Transform {
-                                        position: vector![
-                                            random_range(-5..5) as f32,
-                                            0.0,
-                                            random_range(-5..5) as f32
-                                        ],
-                                        rotation: UnitQuaternion::from_axis_angle(
-                                            &Vector3::y_axis(),
-                                            0.0f32,
-                                        )
-                                        .into_inner(),
-                                        scale: vector![1.0, 1.0, 1.0],
-                                    },
-                                )
+                                Entity::dynamic_body(Transform {
+                                    position: vector![
+                                        random_range(-5..5) as f32,
+                                        0.0,
+                                        random_range(-5..5) as f32
+                                    ],
+                                    rotation: UnitQuaternion::from_axis_angle(
+                                        &Vector3::y_axis(),
+                                        0.0f32,
+                                    )
+                                    .into_inner(),
+                                    scale: vector![1.0, 1.0, 1.0],
+                                })
+                                .mesh(cube_mesh)
                                 .collider_cuboid(vector![1.0, 1.0, 1.0]),
                             );
                         }
@@ -209,18 +287,22 @@ impl Game for MyGame {
                     self.camera_controller.process_mouse(delta_x, delta_y);
                 }
             }
-            EngineEvent::MouseButton { button, pressed } => {
+            EngineEvent::MouseButton { button: _, pressed } => {
                 // Optional: grab cursor on mouse click
                 if pressed && !self.cursor_grabbed {
                     scene.grab_cursor();
                     self.cursor_grabbed = true;
                 }
             }
-            _ => {}
         }
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    Runner::run(MyGame::new())
+    Runner::new(MyGame::new())
+        .fullscreen(true)
+        .window_width(1280)
+        .window_height(720)
+        .title("Fixed Size Game")
+        .run()
 }
