@@ -1,92 +1,65 @@
 use crate::{
-    model::{
-        Instance, InstanceHandle, InstanceRaw, Material, Mesh, MeshData, MeshHandle, ModelVertex,
-        Transform,
+    entity::{
+        Entity, EntityHandle, EntityRef, OPENGL_TO_WGPU_MATRIX, get_entity_from_handle, spawn,
     },
+    model::{InstanceRaw, MeshData, MeshHandle, ModelVertex, load_obj},
     physics::{
-        Camera, ColliderConfig, DynamicBody, Entity, KinematicBody, PhysicsWorld, StaticBody,
+        PhysicsWorld, add_force, apply_impulse, get_angvel, get_linvel, set_angvel,
+        set_enabled_rotations, set_linvel,
     },
 };
 use nalgebra::{
-    self, Isometry, Matrix4, Perspective3, Point3, Quaternion, Translation3, UnitQuaternion,
-    Vector3,
+    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
 };
-use rapier3d::prelude::ColliderBuilder;
-use std::{fs::File, io::BufReader, path::Path, sync::Arc};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalPosition,
     event::*,
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::PhysicalKey,
     window::Window,
 };
 
+pub mod entity;
 pub mod model;
 pub mod physics;
 pub mod texture;
 
 const MAX_INSTANCES: usize = 100;
 
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.0,
-    0.0, 0.0, 0.5, 1.0,
-);
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Transform {
+    pub position: Vector3<f32>,
+    pub rotation: Quaternion<f32>,
+    pub scale: Vector3<f32>,
+}
 
-pub struct CameraInfo {
-    pub eye: Point3<f32>,
-    pub target: Point3<f32>,
-    pub up: Vector3<f32>,
-    pub aspect: f32,
-    pub fovy: f32,
-    pub znear: f32,
-    pub zfar: f32,
+impl Transform {
+    pub fn to_matrix(&self) -> Matrix4<f32> {
+        let translation = Translation3::from(self.position).to_homogeneous();
+        // make sure the quaternion is treated as a rotation
+        let rotation = UnitQuaternion::from_quaternion(self.rotation).to_homogeneous();
+        let scale = Matrix4::new_nonuniform_scaling(&self.scale);
+
+        translation * rotation * scale
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct InstanceHandle {
+    pub mesh: MeshHandle,
+    pub instance_index: usize,
+}
+
+pub struct Instance {
+    pub transform: Transform,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
+pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
-}
-
-pub struct RigidBodyData {
-    instance_handle: InstanceHandle,
-    rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
-}
-
-pub enum EntityData {
-    RigidBody(RigidBodyData),
-    Camera(),
-}
-
-pub struct CameraState {
-    pub transform: Transform,
-    pub fov: f32,
-    pub near: f32,
-    pub far: f32,
-}
-
-pub enum EntityState {
-    Camera(CameraState),
-    None, // TODO
-}
-
-// After spawning the entity, we store it's "entityInfo", which contains the actual information that is used for rendering.
-// Data contains information only relevant to the engine, and entity_state contains info that is also relevant to the user and is the user facing part.
-pub struct EntityInfo {
-    data: EntityData,
-    pub state: EntityState,
-    pub children: Vec<EntityInfo>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EntityHandle {
-    root: usize,
-    path: Vec<usize>,
 }
 
 pub struct EngineState {
@@ -104,14 +77,13 @@ pub struct EngineState {
     meshes: Vec<MeshData>,
     camera_uniform: CameraUniform,
     physics_world: PhysicsWorld,
-    entities: Vec<EntityInfo>,
-    last_mouse_position: Option<PhysicalPosition<f64>>,
+    entities: Vec<EntityRef>,
     cursor_grabbed: bool,
 }
 
 impl EngineState {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<EngineState> {
-        // Create the instance and config
+        // Creates the wgpu instance and the SurfaceConfiguration
 
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())?;
@@ -141,7 +113,7 @@ impl EngineState {
             desired_maximum_frame_latency: 2,
         };
 
-        // Get device and queue
+        // Get device and command queue
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -152,7 +124,7 @@ impl EngineState {
             })
             .await?;
 
-        // Create camera
+        // Creates necessary buffer and bind group for the camera
 
         let camera_uniform = CameraUniform {
             view_proj: Matrix4::identity().into(),
@@ -187,6 +159,8 @@ impl EngineState {
             }],
             label: None,
         });
+
+        // Create the texture bind group layout
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -282,401 +256,101 @@ impl EngineState {
             camera_uniform,
             physics_world,
             entities: vec![],
-            last_mouse_position: None,
             cursor_grabbed: false,
         })
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
-        let path = Path::new(path);
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-
-        // Load OBJ file synchronously
-        let (models, materials) = tobj::load_obj_buf(
-            &mut reader,
-            &tobj::LoadOptions {
-                triangulate: true,
-                single_index: true,
-                ..Default::default()
-            },
-            |mat_path| {
-                let mat_file = File::open(path.parent().unwrap().join(mat_path)).unwrap();
-                let mut mat_reader = BufReader::new(mat_file);
-                Ok(tobj::load_mtl_buf(&mut mat_reader)?)
-            },
-        )?;
-
-        // Load WGPU materials
-        let mut wgpu_materials = Vec::new();
-        if materials.clone()?.len() > 0 {
-            for mat in materials? {
-                let diffuse_texture = texture::Texture::from_file(
-                    &self.device,
-                    &self.queue,
-                    path.parent()
-                        .unwrap()
-                        .join(&mat.diffuse_texture)
-                        .to_str()
-                        .unwrap(),
-                )?;
-                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    layout: &self.texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                        },
-                    ],
-                    label: None,
-                });
-
-                wgpu_materials.push(Material {
-                    name: mat.name,
-                    diffuse_texture,
-                    bind_group,
-                });
-            }
-        } else {
-            let diffuse_bytes = include_bytes!("error.png");
-            let diffuse_texture =
-                texture::Texture::from_bytes(&self.device, &self.queue, diffuse_bytes, "error.png")
-                    .unwrap();
-
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                    },
-                ],
-                label: None,
-            });
-
-            wgpu_materials.push(Material {
-                name: "default".to_string(),
-                diffuse_texture: diffuse_texture,
-                bind_group: bind_group,
-            })
-        }
-
-        // Convert OBJ meshes into MeshData
-        let mut mesh_handle_list = Vec::new();
-        for m in models {
-            let mesh = &m.mesh;
-
-            let vertices: Vec<ModelVertex> = (0..mesh.positions.len() / 3)
-                .map(|i| ModelVertex {
-                    position: [
-                        mesh.positions[i * 3],
-                        mesh.positions[i * 3 + 1],
-                        mesh.positions[i * 3 + 2],
-                    ],
-                    tex_coords: if !mesh.texcoords.is_empty() {
-                        [mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]]
-                    } else {
-                        [0.0, 0.0]
-                    },
-                    normal: if !mesh.normals.is_empty() {
-                        [
-                            mesh.normals[i * 3],
-                            mesh.normals[i * 3 + 1],
-                            mesh.normals[i * 3 + 2],
-                        ]
-                    } else {
-                        [0.0, 0.0, 0.0]
-                    },
-                })
-                .collect();
-
-            let vertex_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-            let index_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Index Buffer"),
-                    contents: bytemuck::cast_slice(&mesh.indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
-            let mesh_struct = Mesh {
-                vertex_buffer,
-                index_buffer,
-                index_count: mesh.indices.len() as u32,
-            };
-
-            // Create a default instance buffer (empty for now)
-            let instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Instance Buffer"),
-                size: (std::mem::size_of::<InstanceRaw>() * MAX_INSTANCES) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            let material = if let Some(mat_id) = mesh.material_id {
-                wgpu_materials[mat_id].clone()
-            } else {
-                wgpu_materials[0].clone() // fallback to first material
-            };
-
-            self.meshes.push(MeshData {
-                mesh: mesh_struct,
-                material,
-                instance_buffer,
-                instances: Vec::new(),
-            });
-
-            mesh_handle_list.push(MeshHandle(self.meshes.len() - 1));
-        }
-
-        Ok(mesh_handle_list)
+        load_obj(
+            &self.device,
+            &self.queue,
+            &self.texture_bind_group_layout,
+            path,
+            &mut self.meshes,
+        )
     }
 
-    pub fn instantiate(&mut self, handle: MeshHandle, transform: Transform) -> InstanceHandle {
-        if let Some(mesh_data) = self.meshes.get_mut(handle.0) {
-            mesh_data.instances.push(Instance { transform });
-            let instance_index = mesh_data.instances.len() - 1;
-
-            let instance_raw = mesh_data.instances.last().unwrap().to_raw();
-            let offset = (mesh_data.instances.len() - 1) * std::mem::size_of::<InstanceRaw>();
-
-            self.queue.write_buffer(
-                &mesh_data.instance_buffer,
-                offset as wgpu::BufferAddress,
-                bytemuck::cast_slice(&[instance_raw]),
-            );
-
-            InstanceHandle {
-                mesh: handle,
-                instance_index: instance_index,
-            }
-        } else {
-            panic!("Couldn't not find mesh by handle");
-        }
-    }
-
-    fn get_entity_from_handle(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
-        let mut entity = &mut self.entities[entity_handle.root];
-
-        for &index in &entity_handle.path {
-            entity = &mut entity.children[index];
-        }
-
-        entity
-    }
-
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
-        self.get_entity_from_handle(entity_handle)
-    }
-
-    pub fn get_children(&mut self, entity_handle: EntityHandle) -> &mut Vec<EntityInfo> {
-        &mut self.get_entity_from_handle(entity_handle).children
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityRef {
+        get_entity_from_handle(&mut self.entities, entity_handle)
     }
 
     pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
-        let entity = self.create(entity);
-        self.entities.push(entity);
-
-        let entity_index = self.entities.len() - 1;
-
-        EntityHandle {
-            root: entity_index,
-            path: vec![],
-        }
-    }
-
-    fn create(&mut self, entity: impl Into<Entity>) -> EntityInfo {
-        let entity = entity.into();
-
-        match entity {
-            Entity::Dynamic(dynamic) => self.create_dynamic_rigidbody(dynamic),
-            Entity::Static(static_body) => self.create_static_rigidbody(static_body),
-            Entity::Kinematic(kinematic) => self.create_kinematic_rigidbody(kinematic),
-            Entity::Camera(camera) => self.create_camera(camera),
-        }
-    }
-
-    fn create_dynamic_rigidbody(&mut self, body: DynamicBody) -> EntityInfo {
-        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
-        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
-            axis.into_inner() * angle
-        } else {
-            Vector3::zeros()
-        };
-
-        let rigid_body = rapier3d::prelude::RigidBodyBuilder::dynamic()
-            .translation(body.transform.position)
-            .rotation(axis_angle)
-            .linvel(body.linear_velocity)
-            .angvel(body.angular_velocity)
-            .additional_mass(body.mass)
-            .linear_damping(body.linear_damping)
-            .angular_damping(body.angular_damping)
-            .gravity_scale(body.gravity_scale)
-            .can_sleep(body.can_sleep)
-            .build();
-
-        self.create_rigidbody(
-            body.mesh_handle,
-            body.transform,
-            body.collider,
-            body.children,
-            rigid_body,
-        )
-    }
-
-    fn create_static_rigidbody(&mut self, body: StaticBody) -> EntityInfo {
-        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
-        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
-            axis.into_inner() * angle
-        } else {
-            Vector3::zeros()
-        };
-
-        let rigid_body = rapier3d::prelude::RigidBodyBuilder::fixed()
-            .translation(body.transform.position)
-            .rotation(axis_angle)
-            .build();
-
-        self.create_rigidbody(
-            body.mesh_handle,
-            body.transform,
-            body.collider,
-            body.children,
-            rigid_body,
-        )
-    }
-
-    fn create_kinematic_rigidbody(&mut self, body: KinematicBody) -> EntityInfo {
-        let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
-        let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
-            axis.into_inner() * angle
-        } else {
-            Vector3::zeros()
-        };
-
-        let rigid_body = rapier3d::prelude::RigidBodyBuilder::kinematic_position_based()
-            .translation(body.transform.position)
-            .rotation(axis_angle)
-            .linvel(body.linear_velocity)
-            .angvel(body.angular_velocity)
-            .build();
-
-        self.create_rigidbody(
-            body.mesh_handle,
-            body.transform,
-            body.collider,
-            body.children,
-            rigid_body,
-        )
-    }
-
-    fn create_rigidbody(
-        &mut self,
-        mesh_handle: MeshHandle,
-        transform: Transform,
-        collider_config: ColliderConfig,
-        children: Vec<Entity>,
-        rigid_body: rapier3d::prelude::RigidBody,
-    ) -> EntityInfo {
-        let mesh_data = self.meshes.get_mut(mesh_handle.0).unwrap();
-        mesh_data.instances.push(Instance { transform });
-
-        let rigid_body_handle = self.physics_world.rigid_body_set.insert(rigid_body);
-
-        let collider = match collider_config {
-            ColliderConfig::Ball { radius } => ColliderBuilder::ball(radius).build(),
-            ColliderConfig::Capsule {
-                half_height,
-                radius,
-            } => ColliderBuilder::capsule_y(half_height, radius).build(),
-            ColliderConfig::Cuboid { half_extents } => {
-                ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build()
-            }
-            ColliderConfig::Cylinder {
-                half_height,
-                radius,
-            } => ColliderBuilder::cylinder(half_height, radius).build(),
-            ColliderConfig::Custom(collider) => collider,
-        };
-
-        self.physics_world.collider_set.insert_with_parent(
-            collider,
-            rigid_body_handle,
-            &mut self.physics_world.rigid_body_set,
-        );
-
-        let instance_index = mesh_data.instances.len() - 1;
-
-        let child_infos: Vec<_> = children
-            .into_iter()
-            .map(|child| self.create(child))
-            .collect();
-
-        EntityInfo {
-            data: EntityData::RigidBody(RigidBodyData {
-                instance_handle: InstanceHandle {
-                    mesh: mesh_handle,
-                    instance_index,
-                },
-                rigid_body_handle,
-            }),
-            state: EntityState::None,
-            children: child_infos,
-        }
-    }
-
-    fn create_camera(&mut self, camera: Camera) -> EntityInfo {
-        // Start by placing the camera at the spawned position
-
-        let iso = Isometry::from_parts(
-            Translation3::from(camera.transform.position),
-            UnitQuaternion::from_quaternion(camera.transform.rotation),
-        );
-
-        let view = iso.inverse().to_homogeneous();
-
-        let aspect = self.config.width as f32 / self.config.height as f32;
-
-        let proj = Perspective3::new(aspect, camera.fov.to_radians(), camera.near, camera.far)
-            .to_homogeneous();
-
-        self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
-
-        self.queue.write_buffer(
+        spawn(
+            &mut self.entities,
+            &mut self.meshes,
+            &mut self.physics_world,
+            &self.queue,
+            &mut self.camera_uniform,
             &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&[self.camera_uniform]),
-        );
-
-        // Then we create the camera entity
-
-        EntityInfo {
-            data: EntityData::Camera(),
-            state: EntityState::Camera(CameraState {
-                transform: camera.transform,
-                fov: camera.fov,
-                near: camera.near,
-                far: camera.far,
-            }),
-            children: vec![],
-        }
+            &self.config,
+            entity,
+        )
     }
+
+    // Rigidbody functions
+
+    pub fn apply_impulse(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
+        apply_impulse(
+            &mut self.physics_world,
+            &mut self.entities,
+            entity_handle,
+            vector,
+        );
+    }
+
+    pub fn add_force(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
+        add_force(
+            &mut self.physics_world,
+            &mut self.entities,
+            entity_handle,
+            vector,
+        );
+    }
+
+    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+        get_linvel(&mut self.physics_world, &mut self.entities, entity_handle)
+    }
+
+    pub fn set_linvel(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
+        set_linvel(
+            &mut self.physics_world,
+            &mut self.entities,
+            entity_handle,
+            vector,
+        );
+    }
+
+    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+        get_angvel(&mut self.physics_world, &mut self.entities, entity_handle)
+    }
+
+    pub fn set_angvel(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
+        set_angvel(
+            &mut self.physics_world,
+            &mut self.entities,
+            entity_handle,
+            vector,
+        );
+    }
+
+    pub fn set_enabled_rotations(
+        &mut self,
+        entity_handle: EntityHandle,
+        enable_x: bool,
+        enable_y: bool,
+        enable_z: bool,
+    ) {
+        set_enabled_rotations(
+            &mut self.physics_world,
+            &mut self.entities,
+            entity_handle,
+            enable_x,
+            enable_y,
+            enable_z,
+        );
+    }
+
+    // Instances    TODO: Instance rework
 
     pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
         self.meshes
@@ -702,6 +376,8 @@ impl EngineState {
         }
     }
 
+    // Events
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.config.width = width;
@@ -710,6 +386,179 @@ impl EngineState {
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth");
             self.surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
+        }
+    }
+
+    pub fn grab_cursor(&mut self) {
+        self.cursor_grabbed = true;
+        let _ = self
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+        self.window.set_cursor_visible(false);
+    }
+
+    pub fn release_cursor(&mut self) {
+        self.cursor_grabbed = false;
+        let _ = self
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::None);
+        self.window.set_cursor_visible(true);
+    }
+
+    pub fn rigid_body_trickle_down_update(
+        &mut self,
+        entity_ref: &EntityRef,
+        parent_position: Vector3<f32>,
+        parent_rotation: Quaternion<f32>,
+    ) {
+        // We want to update all non rigidbody children with the physics of the parent rigidbody.
+        match &entity_ref {
+            EntityRef::DynamicBody(entity)
+            | EntityRef::StaticBody(entity)
+            | EntityRef::KinematicBody(entity) => {
+                let rigid_body_calc = self
+                    .physics_world
+                    .rigid_body_set
+                    .get(entity.rigid_body_handle)
+                    .unwrap();
+
+                let iso = rigid_body_calc.position();
+                let position: Vector3<f32> = iso.translation.vector;
+                let rotation = iso.rotation.into_inner();
+
+                // We apply the physics of the parent rigidbody on all children
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, position, rotation);
+                }
+
+                if let Some(instance_handle) = entity.instance_handle {
+                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
+
+                    self.update_instance(
+                        instance_handle,
+                        Transform {
+                            position,
+                            rotation,
+                            scale,
+                        },
+                    );
+                }
+            }
+            EntityRef::MeshInstance(entity) => {
+                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
+                    .transform_vector(&entity.transform.position);
+
+                let new_position = parent_position + rotated_offset;
+
+                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
+                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
+                .into_inner();
+
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                }
+
+                self.update_instance(
+                    entity.instance_handle,
+                    Transform {
+                        position: new_position,
+                        rotation: new_rotation,
+                        scale: entity.transform.scale,
+                    },
+                );
+            }
+            EntityRef::Camera(entity) => {
+                let iso = Isometry::from_parts(
+                    Translation3::from(parent_position + entity.transform.position),
+                    UnitQuaternion::from_quaternion(parent_rotation)
+                        * UnitQuaternion::from_quaternion(entity.transform.rotation),
+                );
+
+                let view = iso.inverse().to_homogeneous();
+
+                let aspect = self.config.width as f32 / self.config.height as f32;
+
+                let proj =
+                    Perspective3::new(aspect, entity.fov.to_radians(), entity.near, entity.far)
+                        .to_homogeneous();
+
+                self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
+
+                self.queue.write_buffer(
+                    &self.camera_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.camera_uniform]),
+                );
+            }
+            EntityRef::Empty(entity) => {
+                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
+                    .transform_vector(&entity.transform.position);
+
+                let new_position = parent_position + rotated_offset;
+
+                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
+                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
+                .into_inner();
+
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                }
+            }
+        }
+    }
+
+    pub fn update(&mut self) {
+        self.physics_world.step();
+
+        for i in 0..self.entities.len() {
+            let (position, rotation, instance_handle, children) = {
+                let entity_info = &mut self.entities[i];
+
+                match entity_info {
+                    EntityRef::DynamicBody(rigid_body)
+                    | EntityRef::StaticBody(rigid_body)
+                    | EntityRef::KinematicBody(rigid_body) => {
+                        let handle = rigid_body.rigid_body_handle; // assumed Copy
+                        let rigid_body_calc =
+                            self.physics_world.rigid_body_set.get(handle).unwrap();
+
+                        let iso = rigid_body_calc.position();
+                        let position: Vector3<f32> = iso.translation.vector;
+                        let rotation = iso.rotation.into_inner();
+
+                        let children = std::mem::take(&mut rigid_body.children);
+
+                        (position, rotation, rigid_body.instance_handle, children)
+                    }
+                    _ => continue,
+                }
+            };
+
+            for child in &children {
+                self.rigid_body_trickle_down_update(child, position, rotation);
+            }
+
+            if let Some(handle) = instance_handle {
+                let scale = self.get_instance(handle).unwrap().transform.scale;
+
+                self.update_instance(
+                    handle,
+                    Transform {
+                        position,
+                        rotation,
+                        scale,
+                    },
+                );
+            }
+
+            match &mut self.entities[i] {
+                EntityRef::DynamicBody(rigid_body)
+                | EntityRef::StaticBody(rigid_body)
+                | EntityRef::KinematicBody(rigid_body) => {
+                    rigid_body.children = children;
+                }
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -782,182 +631,63 @@ impl EngineState {
 
         Ok(())
     }
-
-    pub fn rigid_body_trickle_down_update(
-        &mut self,
-        entity_info: &EntityInfo,
-        parent_position: Vector3<f32>,
-        parent_rotation: Quaternion<f32>,
-    ) {
-        // We want to update all non rigidbody children with the physics of the parent rigidbody.
-        match &entity_info.data {
-            EntityData::RigidBody(rigid_body) => {
-                let rigid_body_calc = self
-                    .physics_world
-                    .rigid_body_set
-                    .get(rigid_body.rigid_body_handle)
-                    .unwrap();
-
-                let iso = rigid_body_calc.position();
-                let position: Vector3<f32> = iso.translation.vector;
-                let rotation = iso.rotation.into_inner();
-
-                let scale = self
-                    .get_instance(rigid_body.instance_handle)
-                    .unwrap()
-                    .transform
-                    .scale;
-
-                // We apply the physics of the parent rigidbody on all children
-                for child in &entity_info.children {
-                    self.rigid_body_trickle_down_update(child, position, rotation);
-                }
-
-                self.update_instance(
-                    rigid_body.instance_handle,
-                    Transform {
-                        position,
-                        rotation,
-                        scale,
-                    },
-                );
-            }
-            EntityData::Camera() => {
-                // Can't panic
-                let EntityState::Camera(camera_state) = &entity_info.state else {
-                    panic!();
-                };
-
-                let iso = Isometry::from_parts(
-                    Translation3::from(parent_position + camera_state.transform.position),
-                    UnitQuaternion::from_quaternion(camera_state.transform.rotation),
-                );
-
-                let view = iso.inverse().to_homogeneous();
-
-                let aspect = self.config.width as f32 / self.config.height as f32;
-
-                let proj = Perspective3::new(
-                    aspect,
-                    camera_state.fov.to_radians(),
-                    camera_state.near,
-                    camera_state.far,
-                )
-                .to_homogeneous();
-
-                self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
-
-                self.queue.write_buffer(
-                    &self.camera_buffer,
-                    0,
-                    bytemuck::cast_slice(&[self.camera_uniform]),
-                );
-            }
-        }
-    }
-
-    pub fn update(&mut self) {
-        self.physics_world.step();
-
-        for i in 0..self.entities.len() {
-            let (position, rotation, scale, instance_handle) = {
-                let entity_info = &self.entities[i];
-
-                match &entity_info.data {
-                    EntityData::RigidBody(rigid_body) => {
-                        let rigid_body_calc = self
-                            .physics_world
-                            .rigid_body_set
-                            .get(rigid_body.rigid_body_handle)
-                            .unwrap();
-
-                        let iso = rigid_body_calc.position();
-                        let position: Vector3<f32> = iso.translation.vector;
-                        let rotation = iso.rotation.into_inner();
-
-                        let scale = self
-                            .get_instance(rigid_body.instance_handle)
-                            .unwrap()
-                            .transform
-                            .scale;
-
-                        (position, rotation, scale, Some(rigid_body.instance_handle))
-                    }
-                    _ => continue,
-                }
-            };
-
-            if let Some(handle) = instance_handle {
-                let children = std::mem::take(&mut self.entities[i].children);
-
-                // If the entity is a RigidBody, we also apply the physics calculations to it's children.
-
-                for child in &children {
-                    self.rigid_body_trickle_down_update(child, position, rotation);
-                }
-
-                self.entities[i].children = children;
-
-                self.update_instance(
-                    handle,
-                    Transform {
-                        position,
-                        rotation,
-                        scale,
-                    },
-                );
-            }
-        }
-    }
-
-    pub fn grab_cursor(&mut self) {
-        self.cursor_grabbed = true;
-        let _ = self
-            .window
-            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
-        self.window.set_cursor_visible(false);
-    }
-
-    pub fn release_cursor(&mut self) {
-        self.cursor_grabbed = false;
-        let _ = self
-            .window
-            .set_cursor_grab(winit::window::CursorGrabMode::None);
-        self.window.set_cursor_visible(true);
-    }
 }
 
 pub struct Scene<'a> {
     core: &'a mut EngineState,
 }
 
+// User facing abstraction of EngineState
+
 impl<'a> Scene<'a> {
     pub(crate) fn new(state: &'a mut EngineState) -> Self {
         Self { core: state }
     }
 
-    pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
-        self.core.load_obj(path)
-    }
-
-    pub fn instantiate(&mut self, handle: MeshHandle, transform: Transform) -> InstanceHandle {
-        self.core.instantiate(handle, transform)
-    }
-
-    pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
-        self.core.get_instance(handle)
-    }
-
-    pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
-        self.core.update_instance(handle, transform);
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityRef {
+        self.core.get_entity(entity_handle)
     }
 
     pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
         self.core.spawn(entity)
     }
 
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityInfo {
-        self.core.get_entity(entity_handle)
+    pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
+        self.core.load_obj(path)
+    }
+
+    pub fn add_force(&mut self, entity_handle: EntityHandle, force: Vector3<f32>) {
+        self.core.add_force(entity_handle, force);
+    }
+
+    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+        self.core.get_linvel(entity_handle)
+    }
+
+    pub fn set_linvel(&mut self, entity_handle: EntityHandle, velocity: Vector3<f32>) {
+        self.core.set_linvel(entity_handle, velocity);
+    }
+
+    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+        self.core.get_angvel(entity_handle)
+    }
+
+    pub fn set_angvel(&mut self, entity_handle: EntityHandle, velocity: Vector3<f32>) {
+        self.core.set_angvel(entity_handle, velocity);
+    }
+
+    pub fn set_enabled_rotations(
+        &mut self,
+        entity_handle: EntityHandle,
+        enable_x: bool,
+        enable_y: bool,
+        enable_z: bool,
+    ) {
+        self.core
+            .set_enabled_rotations(entity_handle, enable_x, enable_y, enable_z);
+    }
+    pub fn apply_impulse(&mut self, entity_handle: EntityHandle, impulse: Vector3<f32>) {
+        self.core.apply_impulse(entity_handle, impulse);
     }
 
     pub fn grab_cursor(&mut self) {
@@ -990,23 +720,64 @@ pub trait Game {
     fn on_event(&mut self, _event: EngineEvent, _state: &mut Scene) {}
 }
 
-pub struct Runner<G: Game> {
-    game: G,
-}
-
 struct App<'a, G: Game> {
     state: Option<EngineState>,
     game: &'a mut G,
     last_frame_time: std::time::Instant,
+    width: u32,
+    height: u32,
+    title: String,
+    fullscreen: bool,
+    resizable: bool,
+}
+
+pub struct Runner<G: Game> {
+    game: G,
+    width: u32,
+    height: u32,
+    title: String,
+    fullscreen: bool,
+    resizable: bool,
 }
 
 impl<G: Game> Runner<G> {
-    pub fn run(game: G) -> anyhow::Result<()> {
-        let mut runner = Self { game };
-        runner.start()
+    pub fn new(game: G) -> Self {
+        Self {
+            game,
+            width: 800,
+            height: 600,
+            title: "WEngine Game".to_string(),
+            fullscreen: false,
+            resizable: true,
+        }
     }
 
-    fn start(&mut self) -> anyhow::Result<()> {
+    pub fn window_width(mut self, width: u32) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn window_height(mut self, height: u32) -> Self {
+        self.height = height;
+        self
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    pub fn fullscreen(mut self, fullscreen: bool) -> Self {
+        self.fullscreen = fullscreen;
+        self
+    }
+
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
+    pub fn run(mut self) -> anyhow::Result<()> {
         env_logger::init();
 
         let event_loop = EventLoop::with_user_event().build()?;
@@ -1014,6 +785,11 @@ impl<G: Game> Runner<G> {
             state: None,
             game: &mut self.game,
             last_frame_time: std::time::Instant::now(),
+            width: self.width,
+            height: self.height,
+            title: self.title,
+            fullscreen: self.fullscreen,
+            resizable: self.resizable,
         };
 
         event_loop.run_app(&mut app)?;
@@ -1021,6 +797,8 @@ impl<G: Game> Runner<G> {
         Ok(())
     }
 }
+
+// Based on the window "event" or action we run the correct function in game.
 
 impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
     fn window_event(
@@ -1077,19 +855,6 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
                     &mut scene,
                 );
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                if state.cursor_grabbed {
-                    if let Some(last_pos) = state.last_mouse_position {
-                        let delta_x = position.x - last_pos.x;
-                        let delta_y = position.y - last_pos.y;
-
-                        let mut scene = Scene::new(state);
-                        self.game
-                            .on_event(EngineEvent::MouseMotion { delta_x, delta_y }, &mut scene);
-                    }
-                    state.last_mouse_position = Some(position);
-                }
-            }
 
             WindowEvent::MouseInput {
                 state: button_state,
@@ -1110,9 +875,45 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
         }
     }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let state: &mut EngineState = match &mut self.state {
+            Some(canvas) => canvas,
+            None => return,
+        };
+
+        // Handle raw mouse motion for unlimited camera rotation
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            if state.cursor_grabbed {
+                let mut scene = Scene::new(state);
+                self.game.on_event(
+                    EngineEvent::MouseMotion {
+                        delta_x: delta.0,
+                        delta_y: delta.1,
+                    },
+                    &mut scene,
+                );
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes();
+        use winit::window::Fullscreen;
+
+        let mut window_attributes = Window::default_attributes()
+            .with_title(&self.title)
+            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height))
+            .with_resizable(self.resizable);
+
+        // Set fullscreen mode if requested
+        if self.fullscreen {
+            window_attributes =
+                window_attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 

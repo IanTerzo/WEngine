@@ -1,7 +1,7 @@
 use nalgebra::Vector3;
 use rapier3d::prelude::*;
 
-use crate::model::{MeshHandle, Transform};
+use crate::entity::{EntityHandle, EntityRef, get_entity_from_handle};
 
 pub struct PhysicsWorld {
     pub gravity: nalgebra::Vector3<f32>,
@@ -60,316 +60,151 @@ pub enum ColliderConfig {
     Custom(rapier3d::prelude::Collider),
 }
 
-pub struct DynamicBody {
-    pub mesh_handle: MeshHandle,
-    pub transform: Transform,
-    pub children: Vec<Entity>,
-    pub collider: ColliderConfig,
-    pub linear_velocity: Vector3<f32>,
-    pub angular_velocity: Vector3<f32>,
-    pub mass: f32,
-    pub linear_damping: f32,
-    pub angular_damping: f32,
-    pub gravity_scale: f32,
-    pub can_sleep: bool,
-}
+// Rigidbody functions    TODO: Handle erros properly, and rework entity system.
 
-pub struct StaticBody {
-    pub mesh_handle: MeshHandle,
-    pub transform: Transform,
-    pub children: Vec<Entity>,
-    pub collider: ColliderConfig,
-}
+pub fn apply_impulse(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+    vector: Vector3<f32>,
+) {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
 
-pub struct KinematicBody {
-    pub mesh_handle: MeshHandle,
-    pub transform: Transform,
-    pub children: Vec<Entity>,
-    pub collider: ColliderConfig,
-    pub linear_velocity: Vector3<f32>,
-    pub angular_velocity: Vector3<f32>,
-}
-
-pub struct Camera {
-    pub transform: Transform,
-    pub fov: f32,
-    pub near: f32,
-    pub far: f32,
-}
-
-pub enum Entity {
-    Dynamic(DynamicBody),
-    Static(StaticBody),
-    Kinematic(KinematicBody),
-    Camera(Camera),
-}
-
-impl Entity {
-    pub fn dynamic(mesh_handle: MeshHandle, transform: Transform) -> DynamicBody {
-        DynamicBody::new(mesh_handle, transform)
-    }
-
-    pub fn static_body(mesh_handle: MeshHandle, transform: Transform) -> StaticBody {
-        StaticBody::new(mesh_handle, transform)
-    }
-
-    pub fn kinematic(mesh_handle: MeshHandle, transform: Transform) -> KinematicBody {
-        KinematicBody::new(mesh_handle, transform)
-    }
-
-    pub fn camera(transform: Transform) -> Camera {
-        Camera::new(transform)
-    }
-}
-
-impl Camera {
-    pub fn new(transform: Transform) -> Self {
-        Self {
-            transform,
-            fov: 45.0,
-            near: 0.1,
-            far: 100.0,
+            body.apply_impulse(vector, true);
         }
-    }
-
-    pub fn fov(mut self, fov: f32) -> Self {
-        self.fov = fov;
-        self
-    }
-
-    pub fn near(mut self, near: f32) -> Self {
-        self.near = near;
-        self
-    }
-
-    pub fn far(mut self, far: f32) -> Self {
-        self.far = far;
-        self
+        _ => return,
     }
 }
 
-impl DynamicBody {
-    pub fn new(mesh_handle: MeshHandle, transform: Transform) -> Self {
-        Self {
-            mesh_handle,
-            transform,
-            children: vec![],
-            collider: ColliderConfig::Ball { radius: 1.0 },
-            linear_velocity: Vector3::zeros(),
-            angular_velocity: Vector3::zeros(),
-            mass: 1.0,
-            linear_damping: 0.0,
-            angular_damping: 0.0,
-            gravity_scale: 1.0,
-            can_sleep: true,
+pub fn add_force(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+    vector: Vector3<f32>,
+) {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.add_force(vector, true);
         }
+        _ => return,
     }
+}
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
-        self.children.push(child.into());
-        self
-    }
+pub fn get_linvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+) -> Vector3<f32> {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
 
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
+            *body.linvel()
         }
-        self
-    }
-
-    pub fn collider_ball(mut self, radius: f32) -> Self {
-        self.collider = ColliderConfig::Ball { radius };
-        self
-    }
-
-    pub fn collider_capsule(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Capsule {
-            half_height,
-            radius,
-        };
-        self
-    }
-
-    pub fn collider_cuboid(mut self, half_extents: Vector3<f32>) -> Self {
-        self.collider = ColliderConfig::Cuboid { half_extents };
-        self
-    }
-
-    pub fn collider_cylinder(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Cylinder {
-            half_height,
-            radius,
-        };
-        self
-    }
-
-    pub fn linear_velocity(mut self, velocity: Vector3<f32>) -> Self {
-        self.linear_velocity = velocity;
-        self
-    }
-
-    pub fn angular_velocity(mut self, velocity: Vector3<f32>) -> Self {
-        self.angular_velocity = velocity;
-        self
-    }
-
-    pub fn mass(mut self, mass: f32) -> Self {
-        self.mass = mass;
-        self
-    }
-
-    pub fn linear_damping(mut self, damping: f32) -> Self {
-        self.linear_damping = damping;
-        self
-    }
-
-    pub fn angular_damping(mut self, damping: f32) -> Self {
-        self.angular_damping = damping;
-        self
-    }
-
-    pub fn gravity_scale(mut self, scale: f32) -> Self {
-        self.gravity_scale = scale;
-        self
-    }
-
-    pub fn can_sleep(mut self, can_sleep: bool) -> Self {
-        self.can_sleep = can_sleep;
-        self
+        _ => return Vector3::zeros(),
     }
 }
 
-impl StaticBody {
-    pub fn new(mesh_handle: MeshHandle, transform: Transform) -> Self {
-        Self {
-            mesh_handle,
-            transform,
-            children: vec![],
-            collider: ColliderConfig::Ball { radius: 1.0 },
+pub fn set_linvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+    vector: Vector3<f32>,
+) {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.set_linvel(vector, true);
         }
+        _ => return,
     }
+}
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
-        self.children.push(child.into());
-        self
-    }
+pub fn get_angvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+) -> Vector3<f32> {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
 
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
+            *body.angvel()
         }
-        self
-    }
-
-    pub fn collider_ball(mut self, radius: f32) -> Self {
-        self.collider = ColliderConfig::Ball { radius };
-        self
-    }
-
-    pub fn collider_capsule(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Capsule {
-            half_height,
-            radius,
-        };
-        self
-    }
-
-    pub fn collider_cuboid(mut self, half_extents: Vector3<f32>) -> Self {
-        self.collider = ColliderConfig::Cuboid { half_extents };
-        self
-    }
-
-    pub fn collider_cylinder(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Cylinder {
-            half_height,
-            radius,
-        };
-        self
+        _ => return Vector3::zeros(),
     }
 }
 
-impl KinematicBody {
-    pub fn new(mesh_handle: MeshHandle, transform: Transform) -> Self {
-        Self {
-            mesh_handle,
-            transform,
-            children: vec![],
-            collider: ColliderConfig::Ball { radius: 1.0 },
-            linear_velocity: Vector3::zeros(),
-            angular_velocity: Vector3::zeros(),
+pub fn set_angvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+    vector: Vector3<f32>,
+) {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.set_angvel(vector, true);
         }
+        _ => return,
     }
+}
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
-        self.children.push(child.into());
-        self
-    }
-
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
+pub fn set_enabled_rotations(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<EntityRef>,
+    entity_handle: EntityHandle,
+    enable_x: bool,
+    enable_y: bool,
+    enable_z: bool,
+) {
+    match get_entity_from_handle(entities, entity_handle) {
+        EntityRef::DynamicBody(rigid_body)
+        | EntityRef::StaticBody(rigid_body)
+        | EntityRef::KinematicBody(rigid_body) => {
+            if let Some(body) = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+            {
+                body.set_enabled_rotations(enable_x, enable_y, enable_z, true);
+            }
         }
-        self
-    }
-
-    pub fn collider_ball(mut self, radius: f32) -> Self {
-        self.collider = ColliderConfig::Ball { radius };
-        self
-    }
-
-    pub fn collider_capsule(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Capsule {
-            half_height,
-            radius,
-        };
-        self
-    }
-
-    pub fn collider_cuboid(mut self, half_extents: Vector3<f32>) -> Self {
-        self.collider = ColliderConfig::Cuboid { half_extents };
-        self
-    }
-
-    pub fn collider_cylinder(mut self, half_height: f32, radius: f32) -> Self {
-        self.collider = ColliderConfig::Cylinder {
-            half_height,
-            radius,
-        };
-        self
-    }
-
-    pub fn linear_velocity(mut self, velocity: Vector3<f32>) -> Self {
-        self.linear_velocity = velocity;
-        self
-    }
-
-    pub fn angular_velocity(mut self, velocity: Vector3<f32>) -> Self {
-        self.angular_velocity = velocity;
-        self
-    }
-}
-
-// Convert each type to the Body enum
-impl From<DynamicBody> for Entity {
-    fn from(body: DynamicBody) -> Self {
-        Entity::Dynamic(body)
-    }
-}
-
-impl From<StaticBody> for Entity {
-    fn from(body: StaticBody) -> Self {
-        Entity::Static(body)
-    }
-}
-
-impl From<KinematicBody> for Entity {
-    fn from(body: KinematicBody) -> Self {
-        Entity::Kinematic(body)
-    }
-}
-
-impl From<Camera> for Entity {
-    fn from(camera: Camera) -> Self {
-        Entity::Camera(camera)
+        _ => return,
     }
 }

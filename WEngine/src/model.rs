@@ -1,23 +1,17 @@
+use crate::{Instance, MAX_INSTANCES, texture};
 use bytemuck::{Pod, Zeroable};
-use nalgebra::{Matrix4, Quaternion, Translation3, UnitQuaternion, Vector3};
+use std::{fs::File, io::BufReader, path::Path};
+use wgpu::util::DeviceExt;
 
-use crate::texture;
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Transform {
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
-    pub scale: Vector3<f32>,
-}
-
-impl Transform {
-    pub fn to_matrix(&self) -> Matrix4<f32> {
-        let translation = Translation3::from(self.position).to_homogeneous();
-        // make sure the quaternion is treated as a rotation
-        let rotation = UnitQuaternion::from_quaternion(self.rotation).to_homogeneous();
-        let scale = Matrix4::new_nonuniform_scaling(&self.scale);
-
-        translation * rotation * scale
+impl<'a> Instance {
+    pub fn to_raw(&self) -> InstanceRaw {
+        let model_matrix = self.transform.to_matrix(); // convert Transform to 4x4 matrix
+        InstanceRaw {
+            model_matrix: model_matrix.into(),
+            // optional:
+            // material_index: self.material.id as u32,
+            // _padding: [0; 3],
+        }
     }
 }
 
@@ -45,28 +39,6 @@ pub struct MeshData {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MeshHandle(pub usize);
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InstanceHandle {
-    pub mesh: MeshHandle,
-    pub instance_index: usize,
-}
-
-pub struct Instance {
-    pub transform: Transform,
-}
-
-impl<'a> Instance {
-    pub fn to_raw(&self) -> InstanceRaw {
-        let model_matrix = self.transform.to_matrix(); // convert Transform to 4x4 matrix
-        InstanceRaw {
-            model_matrix: model_matrix.into(),
-            // optional:
-            // material_index: self.material.id as u32,
-            // _padding: [0; 3],
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -127,4 +99,164 @@ impl ModelVertex {
             attributes: &Self::ATTRS,
         }
     }
+}
+
+pub fn load_obj(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+    path: &str,
+    meshes: &mut Vec<MeshData>,
+) -> anyhow::Result<Vec<MeshHandle>> {
+    let path = Path::new(path);
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    // Load OBJ file synchronously
+    let (models, materials) = tobj::load_obj_buf(
+        &mut reader,
+        &tobj::LoadOptions {
+            triangulate: true,
+            single_index: true,
+            ..Default::default()
+        },
+        |mat_path| {
+            let mat_file = File::open(path.parent().unwrap().join(mat_path)).unwrap();
+            let mut mat_reader = BufReader::new(mat_file);
+            Ok(tobj::load_mtl_buf(&mut mat_reader)?)
+        },
+    )?;
+
+    // Load WGPU materials
+    let mut wgpu_materials = Vec::new();
+    if materials.clone()?.len() > 0 {
+        for mat in materials? {
+            let diffuse_texture = texture::Texture::from_file(
+                &device,
+                &queue,
+                path.parent()
+                    .unwrap()
+                    .join(&mat.diffuse_texture)
+                    .to_str()
+                    .unwrap(),
+            )?;
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    },
+                ],
+                label: None,
+            });
+
+            wgpu_materials.push(Material {
+                name: mat.name,
+                diffuse_texture,
+                bind_group,
+            });
+        }
+    } else {
+        let diffuse_bytes = include_bytes!("error.png");
+        let diffuse_texture =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "error.png").unwrap();
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                },
+            ],
+            label: None,
+        });
+
+        wgpu_materials.push(Material {
+            name: "default".to_string(),
+            diffuse_texture: diffuse_texture,
+            bind_group: bind_group,
+        })
+    }
+
+    // Convert OBJ meshes into MeshData
+    let mut mesh_handle_list = Vec::new();
+    for m in models {
+        let mesh = &m.mesh;
+
+        let vertices: Vec<ModelVertex> = (0..mesh.positions.len() / 3)
+            .map(|i| ModelVertex {
+                position: [
+                    mesh.positions[i * 3],
+                    mesh.positions[i * 3 + 1],
+                    mesh.positions[i * 3 + 2],
+                ],
+                tex_coords: if !mesh.texcoords.is_empty() {
+                    [mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]]
+                } else {
+                    [0.0, 0.0]
+                },
+                normal: if !mesh.normals.is_empty() {
+                    [
+                        mesh.normals[i * 3],
+                        mesh.normals[i * 3 + 1],
+                        mesh.normals[i * 3 + 2],
+                    ]
+                } else {
+                    [0.0, 0.0, 0.0]
+                },
+            })
+            .collect();
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let mesh_struct = Mesh {
+            vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+        };
+
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Instance Buffer"),
+            size: (std::mem::size_of::<InstanceRaw>() * MAX_INSTANCES) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let material = if let Some(mat_id) = mesh.material_id {
+            wgpu_materials[mat_id].clone()
+        } else {
+            wgpu_materials[0].clone() // fallback to first material
+        };
+
+        meshes.push(MeshData {
+            mesh: mesh_struct,
+            material,
+            instance_buffer,
+            instances: Vec::new(),
+        });
+
+        mesh_handle_list.push(MeshHandle(meshes.len() - 1));
+    }
+
+    Ok(mesh_handle_list)
 }
