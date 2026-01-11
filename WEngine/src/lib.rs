@@ -1,6 +1,6 @@
 use crate::{
     entity::{
-        Entity, EntityHandle, EntityRef, OPENGL_TO_WGPU_MATRIX, get_entity_from_handle, spawn,
+        Entity, EntityBuilder, EntityHandle, OPENGL_TO_WGPU_MATRIX, get_entity_from_handle, spawn,
     },
     model::{InstanceRaw, MeshData, MeshHandle, ModelVertex, load_obj},
     physics::{
@@ -11,7 +11,11 @@ use crate::{
 use nalgebra::{
     self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
 };
-use std::sync::Arc;
+use rapier3d::prelude::ColliderHandle;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -77,7 +81,9 @@ pub struct EngineState {
     meshes: Vec<MeshData>,
     camera_uniform: CameraUniform,
     physics_world: PhysicsWorld,
-    entities: Vec<EntityRef>,
+    entities: Vec<Entity>,
+    collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
+    active_collisions: HashSet<(EntityHandle, EntityHandle)>,
     cursor_grabbed: bool,
 }
 
@@ -256,6 +262,8 @@ impl EngineState {
             camera_uniform,
             physics_world,
             entities: vec![],
+            collider_entity_pairs: HashMap::new(),
+            active_collisions: HashSet::new(),
             cursor_grabbed: false,
         })
     }
@@ -270,14 +278,15 @@ impl EngineState {
         )
     }
 
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityRef {
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<&mut Entity> {
         get_entity_from_handle(&mut self.entities, entity_handle)
     }
 
-    pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
+    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
         spawn(
             &mut self.entities,
             &mut self.meshes,
+            &mut self.collider_entity_pairs,
             &mut self.physics_world,
             &self.queue,
             &mut self.camera_uniform,
@@ -307,20 +316,24 @@ impl EngineState {
         );
     }
 
-    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
         get_linvel(&mut self.physics_world, &mut self.entities, entity_handle)
     }
 
-    pub fn set_linvel(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
+    pub fn set_linvel(
+        &mut self,
+        entity_handle: EntityHandle,
+        vector: Vector3<f32>,
+    ) -> anyhow::Result<()> {
         set_linvel(
             &mut self.physics_world,
             &mut self.entities,
             entity_handle,
             vector,
-        );
+        )
     }
 
-    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
         get_angvel(&mut self.physics_world, &mut self.entities, entity_handle)
     }
 
@@ -407,15 +420,13 @@ impl EngineState {
 
     pub fn rigid_body_trickle_down_update(
         &mut self,
-        entity_ref: &EntityRef,
+        entity_ref: &Entity,
         parent_position: Vector3<f32>,
         parent_rotation: Quaternion<f32>,
     ) {
         // We want to update all non rigidbody children with the physics of the parent rigidbody.
         match &entity_ref {
-            EntityRef::DynamicBody(entity)
-            | EntityRef::StaticBody(entity)
-            | EntityRef::KinematicBody(entity) => {
+            Entity::DynamicBody(entity) => {
                 let rigid_body_calc = self
                     .physics_world
                     .rigid_body_set
@@ -444,7 +455,63 @@ impl EngineState {
                     );
                 }
             }
-            EntityRef::MeshInstance(entity) => {
+            Entity::StaticBody(entity) => {
+                let rigid_body_calc = self
+                    .physics_world
+                    .rigid_body_set
+                    .get(entity.rigid_body_handle)
+                    .unwrap();
+
+                let iso = rigid_body_calc.position();
+                let position: Vector3<f32> = iso.translation.vector;
+                let rotation = iso.rotation.into_inner();
+
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, position, rotation);
+                }
+
+                if let Some(instance_handle) = entity.instance_handle {
+                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
+
+                    self.update_instance(
+                        instance_handle,
+                        Transform {
+                            position,
+                            rotation,
+                            scale,
+                        },
+                    );
+                }
+            }
+            Entity::KinematicBody(entity) => {
+                let rigid_body_calc = self
+                    .physics_world
+                    .rigid_body_set
+                    .get(entity.rigid_body_handle)
+                    .unwrap();
+
+                let iso = rigid_body_calc.position();
+                let position: Vector3<f32> = iso.translation.vector;
+                let rotation = iso.rotation.into_inner();
+
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, position, rotation);
+                }
+
+                if let Some(instance_handle) = entity.instance_handle {
+                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
+
+                    self.update_instance(
+                        instance_handle,
+                        Transform {
+                            position,
+                            rotation,
+                            scale,
+                        },
+                    );
+                }
+            }
+            Entity::MeshInstance(entity) => {
                 let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
                     .transform_vector(&entity.transform.position);
 
@@ -467,7 +534,7 @@ impl EngineState {
                     },
                 );
             }
-            EntityRef::Camera(entity) => {
+            Entity::Camera(entity) => {
                 let iso = Isometry::from_parts(
                     Translation3::from(parent_position + entity.transform.position),
                     UnitQuaternion::from_quaternion(parent_rotation)
@@ -490,7 +557,7 @@ impl EngineState {
                     bytemuck::cast_slice(&[self.camera_uniform]),
                 );
             }
-            EntityRef::Empty(entity) => {
+            Entity::Empty(entity) => {
                 let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
                     .transform_vector(&entity.transform.position);
 
@@ -507,7 +574,12 @@ impl EngineState {
         }
     }
 
-    pub fn update(&mut self) {
+    pub fn update(
+        &mut self,
+    ) -> (
+        Vec<(EntityHandle, EntityHandle)>,
+        Vec<(EntityHandle, EntityHandle)>,
+    ) {
         self.physics_world.step();
 
         for i in 0..self.entities.len() {
@@ -515,10 +587,34 @@ impl EngineState {
                 let entity_info = &mut self.entities[i];
 
                 match entity_info {
-                    EntityRef::DynamicBody(rigid_body)
-                    | EntityRef::StaticBody(rigid_body)
-                    | EntityRef::KinematicBody(rigid_body) => {
-                        let handle = rigid_body.rigid_body_handle; // assumed Copy
+                    Entity::DynamicBody(rigid_body) => {
+                        let handle = rigid_body.rigid_body_handle;
+                        let rigid_body_calc =
+                            self.physics_world.rigid_body_set.get(handle).unwrap();
+
+                        let iso = rigid_body_calc.position();
+                        let position: Vector3<f32> = iso.translation.vector;
+                        let rotation = iso.rotation.into_inner();
+
+                        let children = std::mem::take(&mut rigid_body.children);
+
+                        (position, rotation, rigid_body.instance_handle, children)
+                    }
+                    Entity::StaticBody(rigid_body) => {
+                        let handle = rigid_body.rigid_body_handle;
+                        let rigid_body_calc =
+                            self.physics_world.rigid_body_set.get(handle).unwrap();
+
+                        let iso = rigid_body_calc.position();
+                        let position: Vector3<f32> = iso.translation.vector;
+                        let rotation = iso.rotation.into_inner();
+
+                        let children = std::mem::take(&mut rigid_body.children);
+
+                        (position, rotation, rigid_body.instance_handle, children)
+                    }
+                    Entity::KinematicBody(rigid_body) => {
+                        let handle = rigid_body.rigid_body_handle;
                         let rigid_body_calc =
                             self.physics_world.rigid_body_set.get(handle).unwrap();
 
@@ -552,14 +648,58 @@ impl EngineState {
             }
 
             match &mut self.entities[i] {
-                EntityRef::DynamicBody(rigid_body)
-                | EntityRef::StaticBody(rigid_body)
-                | EntityRef::KinematicBody(rigid_body) => {
+                Entity::DynamicBody(rigid_body) => {
+                    rigid_body.children = children;
+                }
+                Entity::StaticBody(rigid_body) => {
+                    rigid_body.children = children;
+                }
+                Entity::KinematicBody(rigid_body) => {
                     rigid_body.children = children;
                 }
                 _ => unreachable!(),
             }
         }
+
+        let current_collisions: HashSet<(EntityHandle, EntityHandle)> = self
+            .physics_world
+            .narrow_phase
+            .contact_pairs()
+            .map(|contact_pair| {
+                let handle1 = self
+                    .collider_entity_pairs
+                    .get(&contact_pair.collider1)
+                    .unwrap()
+                    .clone();
+                let handle2 = self
+                    .collider_entity_pairs
+                    .get(&contact_pair.collider2)
+                    .unwrap()
+                    .clone();
+
+                // Ensure that it's the same no matter what collider is 1 or 2.
+                if handle1 <= handle2 {
+                    (handle1, handle2)
+                } else {
+                    (handle2, handle1)
+                }
+            })
+            .collect();
+
+        let new_collisions: Vec<_> = current_collisions
+            .difference(&self.active_collisions)
+            .cloned()
+            .collect();
+
+        let removed_collisions: Vec<_> = self
+            .active_collisions
+            .difference(&current_collisions)
+            .cloned()
+            .collect();
+
+        self.active_collisions = current_collisions;
+
+        (new_collisions, removed_collisions)
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -644,11 +784,11 @@ impl<'a> Scene<'a> {
         Self { core: state }
     }
 
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> &mut EntityRef {
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<&mut Entity> {
         self.core.get_entity(entity_handle)
     }
 
-    pub fn spawn(&mut self, entity: impl Into<Entity>) -> EntityHandle {
+    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
         self.core.spawn(entity)
     }
 
@@ -660,15 +800,19 @@ impl<'a> Scene<'a> {
         self.core.add_force(entity_handle, force);
     }
 
-    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
         self.core.get_linvel(entity_handle)
     }
 
-    pub fn set_linvel(&mut self, entity_handle: EntityHandle, velocity: Vector3<f32>) {
-        self.core.set_linvel(entity_handle, velocity);
+    pub fn set_linvel(
+        &mut self,
+        entity_handle: EntityHandle,
+        velocity: Vector3<f32>,
+    ) -> anyhow::Result<()> {
+        self.core.set_linvel(entity_handle, velocity)
     }
 
-    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> Vector3<f32> {
+    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
         self.core.get_angvel(entity_handle)
     }
 
@@ -711,6 +855,14 @@ pub enum EngineEvent {
     MouseButton {
         button: winit::event::MouseButton,
         pressed: bool,
+    },
+    CollisionEnter {
+        entity: EntityHandle,
+        other: EntityHandle,
+    },
+    CollisionExit {
+        entity: EntityHandle,
+        other: EntityHandle,
     },
 }
 
@@ -818,10 +970,57 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
                 let delta = (current_time - self.last_frame_time).as_secs_f32();
                 self.last_frame_time = current_time;
 
-                state.update();
+                let (new_collisions, removed_collision) = state.update();
+
                 {
                     let mut scene = Scene::new(state);
                     self.game.on_update(delta, &mut scene);
+                }
+
+                for pair in new_collisions {
+                    let mut scene = Scene::new(state);
+
+                    // We send the event twice to rapresent both entities perspective
+
+                    self.game.on_event(
+                        EngineEvent::CollisionEnter {
+                            entity: pair.0.clone(),
+                            other: pair.1.clone(),
+                        },
+                        &mut scene,
+                    );
+
+                    let mut scene = Scene::new(state);
+
+                    self.game.on_event(
+                        EngineEvent::CollisionEnter {
+                            entity: pair.1,
+                            other: pair.0,
+                        },
+                        &mut scene,
+                    );
+                }
+
+                for pair in removed_collision {
+                    let mut scene = Scene::new(state);
+
+                    self.game.on_event(
+                        EngineEvent::CollisionExit {
+                            entity: pair.0.clone(),
+                            other: pair.1.clone(),
+                        },
+                        &mut scene,
+                    );
+
+                    let mut scene = Scene::new(state);
+
+                    self.game.on_event(
+                        EngineEvent::CollisionExit {
+                            entity: pair.1,
+                            other: pair.0,
+                        },
+                        &mut scene,
+                    );
                 }
 
                 match state.render() {

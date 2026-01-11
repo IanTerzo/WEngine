@@ -1,9 +1,9 @@
 // Entity builders
 
-use std::collections::HashMap;
-
+use anyhow::anyhow;
 use nalgebra::{Isometry3, Matrix4, Perspective3, Translation, UnitQuaternion, Vector3};
 use rapier3d::prelude::{ColliderBuilder, ColliderHandle};
+use std::collections::HashMap;
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
@@ -19,45 +19,46 @@ use crate::{
     physics::{ColliderConfig, PhysicsWorld},
 };
 
-pub enum Entity {
-    DynamicBody(DynamicBody),
-    StaticBody(StaticBody),
-    KinematicBody(KinematicBody),
-    MeshInstance(MeshInstance),
-    Camera(Camera),
-    Empty(Empty),
+pub enum EntityBuilder {
+    DynamicBody(DynamicBodyBuilder),
+    StaticBody(StaticBodyBuilder),
+    KinematicBody(KinematicBodyBuilder),
+    MeshInstance(MeshInstanceBuilder),
+    Camera(CameraBuilder),
+    Empty(EmptyBuilder),
 }
 
-impl Entity {
-    pub fn dynamic_body(transform: Transform) -> DynamicBody {
-        DynamicBody::new(transform)
+impl EntityBuilder {
+    pub fn dynamic_body(transform: Transform) -> DynamicBodyBuilder {
+        DynamicBodyBuilder::new(transform)
     }
 
-    pub fn static_body(transform: Transform) -> StaticBody {
-        StaticBody::new(transform)
+    pub fn static_body(transform: Transform) -> StaticBodyBuilder {
+        StaticBodyBuilder::new(transform)
     }
 
-    pub fn kinematic_body(transform: Transform) -> KinematicBody {
-        KinematicBody::new(transform)
+    pub fn kinematic_body(transform: Transform) -> KinematicBodyBuilder {
+        KinematicBodyBuilder::new(transform)
     }
 
-    pub fn mesh_instance(mesh_handle: MeshHandle, transform: Transform) -> MeshInstance {
-        MeshInstance::new(mesh_handle, transform)
+    pub fn mesh_instance(mesh_handle: MeshHandle, transform: Transform) -> MeshInstanceBuilder {
+        MeshInstanceBuilder::new(mesh_handle, transform)
     }
 
-    pub fn camera(transform: Transform) -> Camera {
-        Camera::new(transform)
+    pub fn camera(transform: Transform) -> CameraBuilder {
+        CameraBuilder::new(transform)
     }
 
-    pub fn empty(transform: Transform) -> Empty {
-        Empty::new(transform)
+    pub fn empty(transform: Transform) -> EmptyBuilder {
+        EmptyBuilder::new(transform)
     }
 }
 
-pub struct DynamicBody {
+pub struct DynamicBodyBuilder {
+    pub tag: Option<String>,
     pub mesh_handle: Option<MeshHandle>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityBuilder>,
     pub collider: Option<ColliderConfig>,
     pub linear_velocity: Vector3<f32>,
     pub angular_velocity: Vector3<f32>,
@@ -68,44 +69,49 @@ pub struct DynamicBody {
     pub can_sleep: bool,
 }
 
-pub struct StaticBody {
+pub struct StaticBodyBuilder {
+    pub tag: Option<String>,
     pub mesh_handle: Option<MeshHandle>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityBuilder>,
     pub collider: Option<ColliderConfig>,
-    pub on_collision: Option<fn(Entity)>,
 }
 
-pub struct KinematicBody {
+pub struct KinematicBodyBuilder {
+    pub tag: Option<String>,
     pub mesh_handle: Option<MeshHandle>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityBuilder>,
     pub collider: Option<ColliderConfig>,
     pub linear_velocity: Vector3<f32>,
     pub angular_velocity: Vector3<f32>,
 }
 
-pub struct MeshInstance {
+pub struct MeshInstanceBuilder {
+    pub tag: Option<String>,
     pub mesh_handle: MeshHandle,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityBuilder>,
 }
 
-pub struct Camera {
+pub struct CameraBuilder {
+    pub tag: Option<String>,
     pub transform: Transform,
     pub fov: f32,
     pub near: f32,
     pub far: f32,
 }
 
-pub struct Empty {
+pub struct EmptyBuilder {
+    pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityBuilder>,
 }
 
-impl DynamicBody {
+impl DynamicBodyBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
+            tag: None,
             mesh_handle: None,
             transform,
             children: vec![],
@@ -120,20 +126,18 @@ impl DynamicBody {
         }
     }
 
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
     pub fn mesh(mut self, mesh: MeshHandle) -> Self {
         self.mesh_handle = Some(mesh);
         self
     }
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
         self.children.push(child.into());
-        self
-    }
-
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
-        }
         self
     }
 
@@ -199,15 +203,20 @@ impl DynamicBody {
     }
 }
 
-impl StaticBody {
+impl StaticBodyBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
+            tag: None,
             mesh_handle: None,
             transform,
             children: vec![],
             collider: None,
-            on_collision: None,
         }
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
     }
 
     pub fn mesh(mut self, mesh: MeshHandle) -> Self {
@@ -215,15 +224,8 @@ impl StaticBody {
         self
     }
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
         self.children.push(child.into());
-        self
-    }
-
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
-        }
         self
     }
 
@@ -252,16 +254,12 @@ impl StaticBody {
         });
         self
     }
-
-    pub fn on_collision(mut self, handler: fn(Entity)) -> Self {
-        self.on_collision = Some(handler);
-        self
-    }
 }
 
-impl KinematicBody {
+impl KinematicBodyBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
+            tag: None,
             mesh_handle: None,
             transform,
             children: vec![],
@@ -271,20 +269,18 @@ impl KinematicBody {
         }
     }
 
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
     pub fn mesh(mut self, mesh: MeshHandle) -> Self {
         self.mesh_handle = Some(mesh);
         self
     }
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
         self.children.push(child.into());
-        self
-    }
-
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
-        }
         self
     }
 
@@ -325,36 +321,41 @@ impl KinematicBody {
     }
 }
 
-impl MeshInstance {
+impl MeshInstanceBuilder {
     pub fn new(mesh_handle: MeshHandle, transform: Transform) -> Self {
         Self {
+            tag: None,
             mesh_handle,
             transform,
             children: vec![],
         }
     }
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
-        self.children.push(child.into());
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
         self
     }
 
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
-        }
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
+        self.children.push(child.into());
         self
     }
 }
 
-impl Camera {
+impl CameraBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
+            tag: None,
             transform,
             fov: 45.0,
             near: 0.1,
             far: 100.0,
         }
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
     }
 
     pub fn fov(mut self, fov: f32) -> Self {
@@ -373,59 +374,58 @@ impl Camera {
     }
 }
 
-impl Empty {
+impl EmptyBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
+            tag: None,
             transform,
             children: vec![],
         }
     }
 
-    pub fn add_child(mut self, child: impl Into<Entity>) -> Self {
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
         self.children.push(child.into());
         self
     }
+}
 
-    pub fn children<I>(mut self, children: Vec<impl Into<Entity>>) -> Self {
-        for c in children {
-            self.children.push(c.into());
-        }
-        self
+impl From<DynamicBodyBuilder> for EntityBuilder {
+    fn from(body: DynamicBodyBuilder) -> Self {
+        EntityBuilder::DynamicBody(body)
     }
 }
 
-impl From<DynamicBody> for Entity {
-    fn from(body: DynamicBody) -> Self {
-        Entity::DynamicBody(body)
+impl From<StaticBodyBuilder> for EntityBuilder {
+    fn from(body: StaticBodyBuilder) -> Self {
+        EntityBuilder::StaticBody(body)
     }
 }
 
-impl From<StaticBody> for Entity {
-    fn from(body: StaticBody) -> Self {
-        Entity::StaticBody(body)
+impl From<KinematicBodyBuilder> for EntityBuilder {
+    fn from(body: KinematicBodyBuilder) -> Self {
+        EntityBuilder::KinematicBody(body)
     }
 }
 
-impl From<KinematicBody> for Entity {
-    fn from(body: KinematicBody) -> Self {
-        Entity::KinematicBody(body)
+impl From<CameraBuilder> for EntityBuilder {
+    fn from(camera: CameraBuilder) -> Self {
+        EntityBuilder::Camera(camera)
     }
 }
 
-impl From<Camera> for Entity {
-    fn from(camera: Camera) -> Self {
-        Entity::Camera(camera)
+impl From<MeshInstanceBuilder> for EntityBuilder {
+    fn from(mesh_instance: MeshInstanceBuilder) -> Self {
+        EntityBuilder::MeshInstance(mesh_instance)
     }
 }
-
-impl From<MeshInstance> for Entity {
-    fn from(mesh_instance: MeshInstance) -> Self {
-        Entity::MeshInstance(mesh_instance)
-    }
-}
-impl From<Empty> for Entity {
-    fn from(empty: Empty) -> Self {
-        Entity::Empty(empty)
+impl From<EmptyBuilder> for EntityBuilder {
+    fn from(empty: EmptyBuilder) -> Self {
+        EntityBuilder::Empty(empty)
     }
 }
 
@@ -433,158 +433,206 @@ impl From<Empty> for Entity {
 // After spawning the entity using Entity, we store it's "EntityInfo", which contains the actual information that is used for rendering.
 // Data contains information only relevant to the engine, and entity_state contains info that is also relevant to the user and is the user facing part.
 
-pub struct RigidBodyRef {
+#[derive(Clone, Debug)]
+pub struct DynamicBody {
+    pub tag: Option<String>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
-    pub children: Vec<EntityRef>,
+    pub children: Vec<Entity>,
 }
 
-pub struct CameraRef {
+#[derive(Clone, Debug)]
+pub struct StaticBody {
+    pub tag: Option<String>,
+    pub instance_handle: Option<InstanceHandle>,
+    pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
+    pub children: Vec<Entity>,
+}
+
+#[derive(Clone, Debug)]
+pub struct KinematicBody {
+    pub tag: Option<String>,
+    pub instance_handle: Option<InstanceHandle>,
+    pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
+    pub children: Vec<Entity>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Camera {
+    pub tag: Option<String>,
     pub transform: Transform,
     pub fov: f32,
     pub near: f32,
     pub far: f32,
 }
 
-pub struct MeshInstanceRef {
+#[derive(Clone, Debug)]
+pub struct MeshInstance {
+    pub tag: Option<String>,
     pub instance_handle: InstanceHandle,
     pub transform: Transform,
-    pub children: Vec<EntityRef>,
+    pub children: Vec<Entity>,
 }
 
-pub struct EmptyRef {
+#[derive(Clone, Debug)]
+pub struct Empty {
+    pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<EntityRef>,
+    pub children: Vec<Entity>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EntityHandle {
     root: usize,
     path: Vec<usize>,
 }
 
-pub enum EntityRef {
-    DynamicBody(RigidBodyRef),
-    StaticBody(RigidBodyRef),
-    KinematicBody(RigidBodyRef),
-    Camera(CameraRef),
-    MeshInstance(MeshInstanceRef),
-    Empty(EmptyRef),
+#[derive(Clone, Debug)]
+pub enum Entity {
+    DynamicBody(DynamicBody),
+    StaticBody(StaticBody),
+    KinematicBody(KinematicBody),
+    Camera(Camera),
+    MeshInstance(MeshInstance),
+    Empty(Empty),
 }
 
-fn children_mut(entity: &mut EntityRef) -> Option<&mut Vec<EntityRef>> {
+fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
     match entity {
-        EntityRef::DynamicBody(e) => Some(&mut e.children),
-        EntityRef::StaticBody(e) => Some(&mut e.children),
-        EntityRef::KinematicBody(e) => Some(&mut e.children),
-        EntityRef::MeshInstance(e) => Some(&mut e.children),
-        EntityRef::Empty(e) => Some(&mut e.children),
-        EntityRef::Camera(_) => None, // cameras have no children
+        Entity::DynamicBody(e) => Some(&mut e.children),
+        Entity::StaticBody(e) => Some(&mut e.children),
+        Entity::KinematicBody(e) => Some(&mut e.children),
+        Entity::MeshInstance(e) => Some(&mut e.children),
+        Entity::Empty(e) => Some(&mut e.children),
+        Entity::Camera(_) => None, // cameras have no children
     }
 }
 
 pub fn get_entity_from_handle<'a>(
-    entities: &'a mut Vec<EntityRef>,
+    entities: &'a mut Vec<Entity>,
     entity_handle: EntityHandle,
-) -> &'a mut EntityRef {
-    let mut entity: &mut EntityRef = &mut entities[entity_handle.root];
+) -> anyhow::Result<&'a mut Entity> {
+    let mut entity: &mut Entity = entities
+        .get_mut(entity_handle.root)
+        .ok_or_else(|| anyhow!("Invalid root index: {}", entity_handle.root))?;
 
     for &index in &entity_handle.path {
-        let children = children_mut(entity).expect("entity in path has no children");
-        entity = &mut children[index];
+        let children =
+            children_mut(entity).ok_or_else(|| anyhow!("Entity in path has no children"))?;
+        entity = children
+            .get_mut(index)
+            .ok_or_else(|| anyhow!("Invalid child index: {}", index))?;
     }
-
-    entity
+    Ok(entity)
 }
+
 pub fn spawn(
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
     physics_world: &mut PhysicsWorld,
     queue: &wgpu::Queue,
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
-    entity: impl Into<Entity>,
+    entity: impl Into<EntityBuilder>,
 ) -> EntityHandle {
     let entity = create(
         meshes,
+        collider_enitity_pairs,
         physics_world,
         queue,
         camera_uniform,
         camera_buffer,
         config,
-        entity,
         entities.len(),
+        vec![],
+        entity,
     );
     entities.push(entity);
 
-    let entity_index = entities.len() - 1;
-
     EntityHandle {
-        root: entity_index,
+        root: entities.len() - 1,
         path: vec![],
     }
 }
 
 fn create(
     meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
     physics_world: &mut PhysicsWorld,
     queue: &wgpu::Queue,
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
     entity_root_index: usize,
-    entity: impl Into<Entity>,
-) -> EntityRef {
+    path: Vec<usize>,
+    entity: impl Into<EntityBuilder>,
+) -> Entity {
     let entity = entity.into();
 
     match entity {
-        Entity::DynamicBody(dynamic) => create_dynamic_rigidbody(
+        EntityBuilder::DynamicBody(dynamic) => create_dynamic_rigidbody(
             meshes,
+            collider_enitity_pairs,
             physics_world,
             queue,
             camera_uniform,
             camera_buffer,
             config,
+            entity_root_index,
+            path,
             dynamic,
         ),
-        Entity::StaticBody(static_body) => create_static_rigidbody(
+        EntityBuilder::StaticBody(static_body) => create_static_rigidbody(
             meshes,
+            collider_enitity_pairs,
             physics_world,
             queue,
             camera_uniform,
             camera_buffer,
             config,
+            entity_root_index,
+            path,
             static_body,
         ),
-        Entity::KinematicBody(kinematic) => create_kinematic_rigidbody(
+        EntityBuilder::KinematicBody(kinematic) => create_kinematic_rigidbody(
             meshes,
+            collider_enitity_pairs,
             physics_world,
             queue,
             camera_uniform,
             camera_buffer,
             config,
+            entity_root_index,
+            path,
             kinematic,
         ),
-        Entity::MeshInstance(mesh_instance) => create_mesh_instance(
+        EntityBuilder::MeshInstance(mesh_instance) => create_mesh_instance(
             meshes,
+            collider_enitity_pairs,
             physics_world,
             queue,
             camera_uniform,
             camera_buffer,
             config,
+            entity_root_index,
+            path,
             mesh_instance,
         ),
-        Entity::Camera(camera) => {
+        EntityBuilder::Camera(camera) => {
             create_camera(queue, camera_uniform, camera_buffer, config, camera)
         }
-        Entity::Empty(empty) => create_empty(
+        EntityBuilder::Empty(empty) => create_empty(
             meshes,
+            collider_enitity_pairs,
             physics_world,
             queue,
             camera_uniform,
             camera_buffer,
             config,
+            entity_root_index,
+            path,
             empty,
         ),
     }
@@ -592,13 +640,16 @@ fn create(
 
 fn create_dynamic_rigidbody(
     meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
     physics_world: &mut PhysicsWorld,
     queue: &wgpu::Queue,
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
-    body: DynamicBody,
-) -> EntityRef {
+    root: usize,
+    path: Vec<usize>,
+    body: DynamicBodyBuilder,
+) -> Entity {
     let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
     let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
         axis.into_inner() * angle
@@ -618,115 +669,13 @@ fn create_dynamic_rigidbody(
         .can_sleep(body.can_sleep)
         .build();
 
-    create_rigidbody(
-        body.mesh_handle,
-        body.transform,
-        body.collider,
-        body.children,
-        meshes,
-        physics_world,
-        queue,
-        camera_uniform,
-        camera_buffer,
-        config,
-        rigid_body,
-    )
-}
-
-fn create_static_rigidbody(
-    meshes: &mut Vec<MeshData>,
-    physics_world: &mut PhysicsWorld,
-    queue: &wgpu::Queue,
-    camera_uniform: &mut CameraUniform,
-    camera_buffer: &wgpu::Buffer,
-    config: &wgpu::SurfaceConfiguration,
-    body: StaticBody,
-) -> EntityRef {
-    let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
-    let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
-        axis.into_inner() * angle
-    } else {
-        Vector3::zeros()
-    };
-
-    let rigid_body = rapier3d::prelude::RigidBodyBuilder::fixed()
-        .translation(body.transform.position)
-        .rotation(axis_angle)
-        .build();
-
-    create_rigidbody(
-        body.mesh_handle,
-        body.transform,
-        body.collider,
-        body.children,
-        meshes,
-        physics_world,
-        queue,
-        camera_uniform,
-        camera_buffer,
-        config,
-        rigid_body,
-    )
-}
-
-fn create_kinematic_rigidbody(
-    meshes: &mut Vec<MeshData>,
-    physics_world: &mut PhysicsWorld,
-    queue: &wgpu::Queue,
-    camera_uniform: &mut CameraUniform,
-    camera_buffer: &wgpu::Buffer,
-    config: &wgpu::SurfaceConfiguration,
-    body: KinematicBody,
-) -> EntityRef {
-    let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
-    let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
-        axis.into_inner() * angle
-    } else {
-        Vector3::zeros()
-    };
-
-    let rigid_body = rapier3d::prelude::RigidBodyBuilder::kinematic_position_based()
-        .translation(body.transform.position)
-        .rotation(axis_angle)
-        .linvel(body.linear_velocity)
-        .angvel(body.angular_velocity)
-        .build();
-
-    create_rigidbody(
-        body.mesh_handle,
-        body.transform,
-        body.collider,
-        body.children,
-        meshes,
-        physics_world,
-        queue,
-        camera_uniform,
-        camera_buffer,
-        config,
-        rigid_body,
-    )
-}
-
-fn create_rigidbody(
-    mesh_handle: Option<MeshHandle>,
-    transform: Transform,
-    collider_config: Option<ColliderConfig>,
-    on_collision: Option<fn(Entity)>,
-    collider_enitity_pairs: HashMap<ColliderHandle, bool>,
-    children: Vec<Entity>,
-    meshes: &mut Vec<MeshData>,
-    physics_world: &mut PhysicsWorld,
-    queue: &wgpu::Queue,
-    camera_uniform: &mut CameraUniform,
-    camera_buffer: &wgpu::Buffer,
-    config: &wgpu::SurfaceConfiguration,
-    rigid_body: rapier3d::prelude::RigidBody,
-) -> EntityRef {
     let mut instance_handle: Option<InstanceHandle> = None;
 
-    if let Some(mesh_handle) = mesh_handle {
+    if let Some(mesh_handle) = body.mesh_handle {
         let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
-        mesh_data.instances.push(Instance { transform });
+        mesh_data.instances.push(Instance {
+            transform: body.transform,
+        });
 
         let instance_index = mesh_data.instances.len() - 1;
 
@@ -738,7 +687,7 @@ fn create_rigidbody(
 
     let rigid_body_handle = physics_world.rigid_body_set.insert(rigid_body);
 
-    if let Some(collider_config) = collider_config {
+    if let Some(collider_config) = body.collider {
         let collider = match collider_config {
             ColliderConfig::Ball { radius } => ColliderBuilder::ball(radius).build(),
             ColliderConfig::Capsule {
@@ -754,31 +703,250 @@ fn create_rigidbody(
             } => ColliderBuilder::cylinder(half_height, radius).build(),
             ColliderConfig::Custom(collider) => collider,
         };
-        let colliderHandle = physics_world.collider_set.insert_with_parent(
+        let collider_handle = physics_world.collider_set.insert_with_parent(
             collider,
             rigid_body_handle,
             &mut physics_world.rigid_body_set,
         );
 
-        if let Some(on_collision) = on_collision {}
+        let entity_handle = EntityHandle {
+            root,
+            path: path.clone(),
+        };
+
+        collider_enitity_pairs.insert(collider_handle, entity_handle);
     }
 
-    let child_infos: Vec<_> = children
+    let child_infos: Vec<_> = body
+        .children
         .into_iter()
-        .map(|child| {
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
             create(
                 meshes,
+                collider_enitity_pairs,
                 physics_world,
                 queue,
                 camera_uniform,
                 camera_buffer,
                 config,
+                root,
+                path,
                 child,
             )
         })
         .collect();
 
-    EntityRef::DynamicBody(RigidBodyRef {
+    Entity::DynamicBody(DynamicBody {
+        tag: body.tag,
+        instance_handle,
+        rigid_body_handle,
+        children: child_infos,
+    })
+}
+
+fn create_static_rigidbody(
+    meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
+    physics_world: &mut PhysicsWorld,
+    queue: &wgpu::Queue,
+    camera_uniform: &mut CameraUniform,
+    camera_buffer: &wgpu::Buffer,
+    config: &wgpu::SurfaceConfiguration,
+    root: usize,
+    path: Vec<usize>,
+    body: StaticBodyBuilder,
+) -> Entity {
+    let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
+    let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
+        axis.into_inner() * angle
+    } else {
+        Vector3::zeros()
+    };
+
+    let rigid_body = rapier3d::prelude::RigidBodyBuilder::fixed()
+        .translation(body.transform.position)
+        .rotation(axis_angle)
+        .build();
+
+    let mut instance_handle: Option<InstanceHandle> = None;
+
+    if let Some(mesh_handle) = body.mesh_handle {
+        let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
+        mesh_data.instances.push(Instance {
+            transform: body.transform,
+        });
+
+        let instance_index = mesh_data.instances.len() - 1;
+
+        instance_handle = Some(InstanceHandle {
+            mesh: mesh_handle,
+            instance_index,
+        })
+    }
+
+    let rigid_body_handle = physics_world.rigid_body_set.insert(rigid_body);
+
+    if let Some(collider_config) = body.collider {
+        let collider = match collider_config {
+            ColliderConfig::Ball { radius } => ColliderBuilder::ball(radius).build(),
+            ColliderConfig::Capsule {
+                half_height,
+                radius,
+            } => ColliderBuilder::capsule_y(half_height, radius).build(),
+            ColliderConfig::Cuboid { half_extents } => {
+                ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build()
+            }
+            ColliderConfig::Cylinder {
+                half_height,
+                radius,
+            } => ColliderBuilder::cylinder(half_height, radius).build(),
+            ColliderConfig::Custom(collider) => collider,
+        };
+        let collider_handle = physics_world.collider_set.insert_with_parent(
+            collider,
+            rigid_body_handle,
+            &mut physics_world.rigid_body_set,
+        );
+
+        let entity_handle = EntityHandle {
+            root,
+            path: path.clone(),
+        };
+
+        collider_enitity_pairs.insert(collider_handle, entity_handle);
+    }
+
+    let child_infos: Vec<_> = body
+        .children
+        .into_iter()
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
+            create(
+                meshes,
+                collider_enitity_pairs,
+                physics_world,
+                queue,
+                camera_uniform,
+                camera_buffer,
+                config,
+                root,
+                path,
+                child,
+            )
+        })
+        .collect();
+
+    Entity::StaticBody(StaticBody {
+        tag: body.tag,
+        instance_handle,
+        rigid_body_handle,
+        children: child_infos,
+    })
+}
+
+fn create_kinematic_rigidbody(
+    meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
+    physics_world: &mut PhysicsWorld,
+    queue: &wgpu::Queue,
+    camera_uniform: &mut CameraUniform,
+    camera_buffer: &wgpu::Buffer,
+    config: &wgpu::SurfaceConfiguration,
+    root: usize,
+    path: Vec<usize>,
+    body: KinematicBodyBuilder,
+) -> Entity {
+    let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
+    let axis_angle = if let Some((axis, angle)) = unit_quat.axis_angle() {
+        axis.into_inner() * angle
+    } else {
+        Vector3::zeros()
+    };
+
+    let rigid_body = rapier3d::prelude::RigidBodyBuilder::kinematic_position_based()
+        .translation(body.transform.position)
+        .rotation(axis_angle)
+        .linvel(body.linear_velocity)
+        .angvel(body.angular_velocity)
+        .build();
+
+    let mut instance_handle: Option<InstanceHandle> = None;
+
+    if let Some(mesh_handle) = body.mesh_handle {
+        let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
+        mesh_data.instances.push(Instance {
+            transform: body.transform,
+        });
+
+        let instance_index = mesh_data.instances.len() - 1;
+
+        instance_handle = Some(InstanceHandle {
+            mesh: mesh_handle,
+            instance_index,
+        })
+    }
+
+    let rigid_body_handle = physics_world.rigid_body_set.insert(rigid_body);
+
+    if let Some(collider_config) = body.collider {
+        let collider = match collider_config {
+            ColliderConfig::Ball { radius } => ColliderBuilder::ball(radius).build(),
+            ColliderConfig::Capsule {
+                half_height,
+                radius,
+            } => ColliderBuilder::capsule_y(half_height, radius).build(),
+            ColliderConfig::Cuboid { half_extents } => {
+                ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build()
+            }
+            ColliderConfig::Cylinder {
+                half_height,
+                radius,
+            } => ColliderBuilder::cylinder(half_height, radius).build(),
+            ColliderConfig::Custom(collider) => collider,
+        };
+        let collider_handle = physics_world.collider_set.insert_with_parent(
+            collider,
+            rigid_body_handle,
+            &mut physics_world.rigid_body_set,
+        );
+
+        let entity_handle = EntityHandle {
+            root,
+            path: path.clone(),
+        };
+
+        collider_enitity_pairs.insert(collider_handle, entity_handle);
+    }
+
+    let child_infos: Vec<_> = body
+        .children
+        .into_iter()
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
+            create(
+                meshes,
+                collider_enitity_pairs,
+                physics_world,
+                queue,
+                camera_uniform,
+                camera_buffer,
+                config,
+                root,
+                path,
+                child,
+            )
+        })
+        .collect();
+
+    Entity::KinematicBody(KinematicBody {
+        tag: body.tag,
         instance_handle,
         rigid_body_handle,
         children: child_infos,
@@ -787,13 +955,16 @@ fn create_rigidbody(
 
 fn create_mesh_instance(
     meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
     physics_world: &mut PhysicsWorld,
     queue: &wgpu::Queue,
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
-    mesh_instance: MeshInstance,
-) -> EntityRef {
+    root: usize,
+    path: Vec<usize>,
+    mesh_instance: MeshInstanceBuilder,
+) -> Entity {
     let mesh_data = meshes.get_mut(mesh_instance.mesh_handle.0).unwrap();
     mesh_data.instances.push(Instance {
         transform: mesh_instance.transform,
@@ -804,20 +975,28 @@ fn create_mesh_instance(
     let child_infos: Vec<_> = mesh_instance
         .children
         .into_iter()
-        .map(|child| {
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
+
             create(
                 meshes,
+                collider_enitity_pairs,
                 physics_world,
                 queue,
                 camera_uniform,
                 camera_buffer,
                 config,
+                root,
+                path,
                 child,
             )
         })
         .collect();
 
-    EntityRef::MeshInstance(MeshInstanceRef {
+    Entity::MeshInstance(MeshInstance {
+        tag: mesh_instance.tag,
         instance_handle: InstanceHandle {
             mesh: mesh_instance.mesh_handle,
             instance_index,
@@ -832,8 +1011,8 @@ fn create_camera(
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
-    camera: Camera,
-) -> EntityRef {
+    camera: CameraBuilder,
+) -> Entity {
     // Start by placing the camera at the spawned position
 
     let iso = Isometry3::from_parts(
@@ -854,7 +1033,8 @@ fn create_camera(
 
     // Then we create the camera entity
 
-    EntityRef::Camera(CameraRef {
+    Entity::Camera(Camera {
+        tag: camera.tag,
         transform: camera.transform,
         fov: camera.fov,
         near: camera.near,
@@ -864,30 +1044,41 @@ fn create_camera(
 
 fn create_empty(
     meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
     physics_world: &mut PhysicsWorld,
     queue: &wgpu::Queue,
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
-    empty: Empty,
-) -> EntityRef {
+    root: usize,
+    path: Vec<usize>,
+    empty: EmptyBuilder,
+) -> Entity {
     let child_infos: Vec<_> = empty
         .children
         .into_iter()
-        .map(|child| {
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
+
             create(
                 meshes,
+                collider_enitity_pairs,
                 physics_world,
                 queue,
                 camera_uniform,
                 camera_buffer,
                 config,
+                root,
+                path,
                 child,
             )
         })
         .collect();
 
-    EntityRef::Empty(EmptyRef {
+    Entity::Empty(Empty {
+        tag: empty.tag,
         transform: empty.transform,
         children: child_infos,
     })

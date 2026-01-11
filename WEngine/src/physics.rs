@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
+use anyhow::anyhow;
 use nalgebra::Vector3;
 use rapier3d::prelude::*;
 
-use crate::entity::{EntityHandle, EntityRef, get_entity_from_handle};
+use crate::entity::{Entity, EntityHandle, get_entity_from_handle};
 
 pub struct PhysicsWorld {
     pub gravity: nalgebra::Vector3<f32>,
@@ -66,165 +65,285 @@ pub enum ColliderConfig {
 
 pub fn apply_impulse(
     physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     entity_handle: EntityHandle,
     vector: Vector3<f32>,
-) {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+) -> anyhow::Result<()> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
             body.apply_impulse(vector, true);
+
+            Ok(())
         }
-        _ => return,
+        Entity::StaticBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.apply_impulse(vector, true);
+
+            Ok(())
+        }
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.apply_impulse(vector, true);
+
+            Ok(())
+        }
+        _ => Err(anyhow!("Could not apply impulse to a non-rigidbody entity")),
     }
 }
 
 pub fn add_force(
     physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     entity_handle: EntityHandle,
     vector: Vector3<f32>,
-) {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+) -> anyhow::Result<()> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
             body.add_force(vector, true);
-        }
-        _ => return,
-    }
-}
 
-pub fn get_linvel(
-    physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
-    entity_handle: EntityHandle,
-) -> Vector3<f32> {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+            Ok(())
+        }
+        Entity::StaticBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
-            *body.linvel()
+            body.add_force(vector, true);
+
+            Ok(())
         }
-        _ => return Vector3::zeros(),
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.add_force(vector, true);
+
+            Ok(())
+        }
+        _ => Err(anyhow!("Could not add force to a non-rigidbody entity")),
+    }
+}
+
+pub fn get_linvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<Entity>,
+    entity_handle: EntityHandle,
+) -> anyhow::Result<Vector3<f32>> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.linvel())
+        }
+        Entity::StaticBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.linvel())
+        }
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.linvel())
+        }
+        _ => Err(anyhow!(
+            "Could not get linear velocity of a non-rigidbody entity"
+        )),
     }
 }
 
 pub fn set_linvel(
     physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     entity_handle: EntityHandle,
     vector: Vector3<f32>,
-) {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+) -> anyhow::Result<()> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
             body.set_linvel(vector, true);
-        }
-        _ => return,
-    }
-}
 
-pub fn get_angvel(
-    physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
-    entity_handle: EntityHandle,
-) -> Vector3<f32> {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+            Ok(())
+        }
+        Entity::StaticBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
-            *body.angvel()
+            body.set_linvel(vector, true);
+
+            Ok(())
         }
-        _ => return Vector3::zeros(),
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.set_linvel(vector, true);
+
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "Could not set linear velocity of a non-rigidbody entity"
+        )),
+    }
+}
+
+pub fn get_angvel(
+    physics_world: &mut PhysicsWorld,
+    entities: &mut Vec<Entity>,
+    entity_handle: EntityHandle,
+) -> anyhow::Result<Vector3<f32>> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.angvel())
+        }
+        Entity::StaticBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.angvel())
+        }
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            Ok(*body.angvel())
+        }
+        _ => Err(anyhow!(
+            "Could not get angular velocity of a non-rigidbody entity"
+        )),
     }
 }
 
 pub fn set_angvel(
     physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     entity_handle: EntityHandle,
     vector: Vector3<f32>,
-) {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+) -> anyhow::Result<()> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
             let body = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
                 .unwrap();
 
             body.set_angvel(vector, true);
+
+            Ok(())
         }
-        _ => return,
+        Entity::StaticBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.set_angvel(vector, true);
+
+            Ok(())
+        }
+        Entity::KinematicBody(rigid_body) => {
+            let body = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+                .unwrap();
+
+            body.set_angvel(vector, true);
+
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "Could not set angular velocity of a non-rigidbody entity"
+        )),
     }
 }
 
 pub fn set_enabled_rotations(
     physics_world: &mut PhysicsWorld,
-    entities: &mut Vec<EntityRef>,
+    entities: &mut Vec<Entity>,
     entity_handle: EntityHandle,
     enable_x: bool,
     enable_y: bool,
     enable_z: bool,
-) {
-    match get_entity_from_handle(entities, entity_handle) {
-        EntityRef::DynamicBody(rigid_body)
-        | EntityRef::StaticBody(rigid_body)
-        | EntityRef::KinematicBody(rigid_body) => {
+) -> anyhow::Result<()> {
+    match get_entity_from_handle(entities, entity_handle)? {
+        Entity::DynamicBody(rigid_body) => {
             if let Some(body) = physics_world
                 .rigid_body_set
                 .get_mut(rigid_body.rigid_body_handle)
             {
                 body.set_enabled_rotations(enable_x, enable_y, enable_z, true);
             }
+
+            Ok(())
         }
-        _ => return,
-    }
-}
+        Entity::StaticBody(rigid_body) => {
+            if let Some(body) = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+            {
+                body.set_enabled_rotations(enable_x, enable_y, enable_z, true);
+            }
 
-
-fn is_body_colliding(
-    body_handle: RigidBodyHandle,
-    bodies: &RigidBodySet,
-    narrow_phase: &NarrowPhase,
-    collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>
-) -> bool {
-    let body = &bodies[body_handle];
-
-    for collider_handle in body.colliders() {
-        for contact_pair in narrow_phase.contact_pairs() {
-       	contact_pair.
+            Ok(())
         }
-    }
+        Entity::KinematicBody(rigid_body) => {
+            if let Some(body) = physics_world
+                .rigid_body_set
+                .get_mut(rigid_body.rigid_body_handle)
+            {
+                body.set_enabled_rotations(enable_x, enable_y, enable_z, true);
+            }
 
-    false
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "Could not set enabled rotations of a non-rigidbody entity"
+        )),
+    }
 }
