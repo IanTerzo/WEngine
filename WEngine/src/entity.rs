@@ -1,7 +1,9 @@
 // Entity builders
 
+use std::collections::HashMap;
+
 use nalgebra::{Isometry3, Matrix4, Perspective3, Translation, UnitQuaternion, Vector3};
-use rapier3d::prelude::ColliderBuilder;
+use rapier3d::prelude::{ColliderBuilder, ColliderHandle};
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
@@ -71,6 +73,7 @@ pub struct StaticBody {
     pub transform: Transform,
     pub children: Vec<Entity>,
     pub collider: Option<ColliderConfig>,
+    pub on_collision: Option<fn(Entity)>,
 }
 
 pub struct KinematicBody {
@@ -203,6 +206,7 @@ impl StaticBody {
             transform,
             children: vec![],
             collider: None,
+            on_collision: None,
         }
     }
 
@@ -246,6 +250,11 @@ impl StaticBody {
             half_height,
             radius,
         });
+        self
+    }
+
+    pub fn on_collision(mut self, handler: fn(Entity)) -> Self {
+        self.on_collision = Some(handler);
         self
     }
 }
@@ -505,6 +514,7 @@ pub fn spawn(
         camera_buffer,
         config,
         entity,
+        entities.len(),
     );
     entities.push(entity);
 
@@ -523,6 +533,7 @@ fn create(
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
+    entity_root_index: usize,
     entity: impl Into<Entity>,
 ) -> EntityRef {
     let entity = entity.into();
@@ -700,6 +711,8 @@ fn create_rigidbody(
     mesh_handle: Option<MeshHandle>,
     transform: Transform,
     collider_config: Option<ColliderConfig>,
+    on_collision: Option<fn(Entity)>,
+    collider_enitity_pairs: HashMap<ColliderHandle, bool>,
     children: Vec<Entity>,
     meshes: &mut Vec<MeshData>,
     physics_world: &mut PhysicsWorld,
@@ -741,11 +754,13 @@ fn create_rigidbody(
             } => ColliderBuilder::cylinder(half_height, radius).build(),
             ColliderConfig::Custom(collider) => collider,
         };
-        physics_world.collider_set.insert_with_parent(
+        let colliderHandle = physics_world.collider_set.insert_with_parent(
             collider,
             rigid_body_handle,
             &mut physics_world.rigid_body_set,
         );
+
+        if let Some(on_collision) = on_collision {}
     }
 
     let child_infos: Vec<_> = children

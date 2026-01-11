@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use nalgebra::Vector3;
 use rapier3d::prelude::*;
 
@@ -207,4 +209,22 @@ pub fn set_enabled_rotations(
         }
         _ => return,
     }
+}
+
+
+fn is_body_colliding(
+    body_handle: RigidBodyHandle,
+    bodies: &RigidBodySet,
+    narrow_phase: &NarrowPhase,
+    collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>
+) -> bool {
+    let body = &bodies[body_handle];
+
+    for collider_handle in body.colliders() {
+        for contact_pair in narrow_phase.contact_pairs() {
+       	contact_pair.
+        }
+    }
+
+    false
 }

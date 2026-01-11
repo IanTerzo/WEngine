@@ -1,11 +1,11 @@
-use nalgebra::{self, vector, UnitQuaternion, Vector3};
+use WEngine::{
+    EngineEvent, Game, Runner, Scene, Transform,
+    entity::{Entity, EntityBuilder, EntityHandle},
+    model::MeshHandle,
+};
+use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use rand::random_range;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use WEngine::{
-    entity::{Entity, EntityHandle, EntityRef},
-    model::MeshHandle,
-    EngineEvent, Game, Runner, Scene, Transform,
-};
 
 struct CameraController {
     sensitivity: f32,
@@ -45,11 +45,14 @@ impl CameraController {
 
 struct PlayerController {
     speed: f32,
-    jump_force: f32,
+    jump_velocity: f32,
+    air_control_factor: f32,
+    is_on_ground: bool,
     is_forward_pressed: bool,
     is_backward_pressed: bool,
     is_left_pressed: bool,
     is_right_pressed: bool,
+    is_jump_pressed: bool,
 }
 
 fn get_forward(rotation: UnitQuaternion<f32>) -> Vector3<f32> {
@@ -64,11 +67,14 @@ impl PlayerController {
     fn new() -> Self {
         Self {
             speed: 15.0,
-            jump_force: 120.0,
+            jump_velocity: 12.0,
+            air_control_factor: 0.5,
+            is_on_ground: false,
             is_forward_pressed: false,
             is_backward_pressed: false,
             is_left_pressed: false,
             is_right_pressed: false,
+            is_jump_pressed: false,
         }
     }
 
@@ -135,29 +141,31 @@ impl Game for MyGame {
         let cube_mesh = scene.load_obj("../res/cube.obj").unwrap()[0];
 
         // Ground
+
         scene.spawn(
-            Entity::static_body(Transform {
+            EntityBuilder::static_body(Transform {
                 position: vector![0.0, -30.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
                 scale: vector![10.0, 1.0, 10.0],
             })
             .collider_cuboid(vector![10.0, 1.0, 10.0])
-            .mesh(cube_mesh),
+            .mesh(cube_mesh)
+            .tag("walkable"),
         );
 
         // Player
 
         let player_handle = scene.spawn(
-            Entity::dynamic_body(Transform {
+            EntityBuilder::dynamic_body(Transform {
                 position: vector![0.0, 0.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
                 scale: vector![1.0, 1.0, 1.0],
             })
             .add_child(
-                Entity::camera(Transform {
-                    position: vector![0.0, 2.0, 0.0],
+                EntityBuilder::camera(Transform {
+                    position: vector![0.0, 1.8, 0.0],
                     rotation: UnitQuaternion::from_axis_angle(
                         &Vector3::y_axis(),
                         0.0f32.to_radians(),
@@ -167,7 +175,9 @@ impl Game for MyGame {
                 })
                 .fov(80.0),
             )
-            .collider_capsule(2.0, 1.0),
+            .collider_capsule(0.9, 0.5)
+            .tag("player_body")
+            .gravity_scale(3.5), // Feeles more natural.
         );
 
         scene.set_enabled_rotations(player_handle.clone(), false, false, false);
@@ -179,28 +189,61 @@ impl Game for MyGame {
         self.cursor_grabbed = true;
     }
 
-    fn on_update(&mut self, _delta: f32, scene: &mut Scene) {
-        // Update camera rotation based on mouse input
+    fn on_update(&mut self, delta: f32, scene: &mut Scene) {
         if let Some(player_handle) = &self.player_entity {
-            if let EntityRef::DynamicBody(rigid_body) = &mut scene.get_entity(player_handle.clone())
+            // Handle jumping in update loop instead of event
+            if self.player_controller.is_jump_pressed && self.player_controller.is_on_ground {
+                let current_vel = scene.get_linvel(player_handle.clone()).unwrap();
+                scene
+                    .set_linvel(
+                        player_handle.clone(),
+                        vector![
+                            current_vel.x,
+                            self.player_controller.jump_velocity,
+                            current_vel.z
+                        ],
+                    )
+                    .unwrap();
+            }
+
+            // Update camera rotation
+            if let Entity::DynamicBody(rigid_body) =
+                &mut scene.get_entity(player_handle.clone()).unwrap()
             {
-                if let EntityRef::Camera(view) = &mut rigid_body.children[0] {
+                if let Entity::Camera(view) = &mut rigid_body.children[0] {
                     view.transform.rotation = self.camera_controller.get_rotation().into_inner()
                 }
             }
 
-            // Calculate movement velocity
+            // Movement logic
             let rot = self.camera_controller.get_rotation();
-            let velocity = self.player_controller.get_movement_direction(rot);
+            let desired_velocity = self.player_controller.get_movement_direction(rot);
+            let current_vel = scene.get_linvel(player_handle.clone()).unwrap();
 
-            // Get current velocity to preserve Y component (gravity/jumping)
-            let current_vel = scene.get_linvel(player_handle.clone());
+            if self.player_controller.is_on_ground {
+                scene
+                    .set_linvel(
+                        player_handle.clone(),
+                        vector![desired_velocity.x, current_vel.y, desired_velocity.z],
+                    )
+                    .unwrap();
+            } else {
+                let current_horizontal = vector![current_vel.x, 0.0, current_vel.z];
+                let adjustment = vector![
+                    desired_velocity.x - current_vel.x,
+                    0.0,
+                    desired_velocity.z - current_vel.z
+                ];
+                let air_influence = self.player_controller.air_control_factor * delta * 20.0;
+                let new_horizontal = current_horizontal + adjustment * air_influence;
 
-            // Set velocity - preserve Y for gravity, replace X and Z for movement
-            scene.set_linvel(
-                player_handle.clone(),
-                vector![velocity.x, current_vel.y, velocity.z],
-            );
+                scene
+                    .set_linvel(
+                        player_handle.clone(),
+                        vector![new_horizontal.x, current_vel.y, new_horizontal.z],
+                    )
+                    .unwrap();
+            }
         }
     }
 
@@ -224,14 +267,7 @@ impl Game for MyGame {
                         self.player_controller.is_right_pressed = pressed;
                     }
                     KeyCode::Space => {
-                        if pressed {
-                            if let Some(player_handle) = &self.player_entity {
-                                scene.apply_impulse(
-                                    player_handle.clone(),
-                                    vector![0.0, self.player_controller.jump_force, 0.0],
-                                );
-                            }
-                        }
+                        self.player_controller.is_jump_pressed = pressed;
                     }
                     KeyCode::KeyQ => {
                         if !pressed {
@@ -240,7 +276,7 @@ impl Game for MyGame {
 
                         if let Some(cube_mesh) = self.cube_mesh {
                             scene.spawn(
-                                Entity::dynamic_body(Transform {
+                                EntityBuilder::dynamic_body(Transform {
                                     position: vector![
                                         random_range(-5..5) as f32,
                                         0.0,
@@ -254,7 +290,8 @@ impl Game for MyGame {
                                     scale: vector![1.0, 1.0, 1.0],
                                 })
                                 .mesh(cube_mesh)
-                                .collider_cuboid(vector![1.0, 1.0, 1.0]),
+                                .collider_cuboid(vector![1.0, 1.0, 1.0])
+                                .tag("walkable"),
                             );
                         }
                     }
@@ -286,6 +323,54 @@ impl Game for MyGame {
                 if pressed && !self.cursor_grabbed {
                     scene.grab_cursor();
                     self.cursor_grabbed = true;
+                }
+            }
+            EngineEvent::CollisionEnter { entity, other } => {
+                let tag_name: Option<String> =
+                    if let Entity::DynamicBody(static_body) = scene.get_entity(entity).unwrap() {
+                        static_body.tag.clone()
+                    } else {
+                        None
+                    };
+
+                let tag_name_other: Option<String> = if let Entity::StaticBody(static_body) =
+                    scene.get_entity(other.clone()).unwrap()
+                {
+                    static_body.tag.clone()
+                } else if let Entity::DynamicBody(dynamic_body) = scene.get_entity(other).unwrap() {
+                    dynamic_body.tag.clone()
+                } else {
+                    None
+                };
+
+                if tag_name.unwrap_or_default() == "player_body"
+                    && tag_name_other.unwrap_or_default() == "walkable"
+                {
+                    self.player_controller.is_on_ground = true;
+                }
+            }
+            EngineEvent::CollisionExit { entity, other } => {
+                let tag_name: Option<String> =
+                    if let Entity::DynamicBody(static_body) = scene.get_entity(entity).unwrap() {
+                        static_body.tag.clone()
+                    } else {
+                        None
+                    };
+
+                let tag_name_other: Option<String> = if let Entity::StaticBody(static_body) =
+                    scene.get_entity(other.clone()).unwrap()
+                {
+                    static_body.tag.clone()
+                } else if let Entity::DynamicBody(dynamic_body) = scene.get_entity(other).unwrap() {
+                    dynamic_body.tag.clone()
+                } else {
+                    None
+                };
+
+                if tag_name.unwrap_or_default() == "player_body"
+                    && tag_name_other.unwrap_or_default() == "walkable"
+                {
+                    self.player_controller.is_on_ground = false;
                 }
             }
         }
