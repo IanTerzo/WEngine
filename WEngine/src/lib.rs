@@ -1,6 +1,7 @@
 use crate::{
     entity::{
-        Entity, EntityBuilder, EntityHandle, OPENGL_TO_WGPU_MATRIX, get_entity_from_handle, spawn,
+        Entity, EntityBuilder, EntityHandle, FromEntity, OPENGL_TO_WGPU_MATRIX,
+        get_entity_from_handle, spawn,
     },
     model::{InstanceRaw, MeshData, MeshHandle, ModelVertex, load_obj},
     physics::{
@@ -278,8 +279,12 @@ impl EngineState {
         )
     }
 
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<&mut Entity> {
-        get_entity_from_handle(&mut self.entities, entity_handle)
+    pub fn get_entity<T: FromEntity>(
+        &mut self,
+        entity_handle: EntityHandle,
+    ) -> anyhow::Result<&mut T> {
+        let entity = get_entity_from_handle(&mut self.entities, entity_handle)?;
+        T::from_entity(entity)
     }
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
@@ -784,8 +789,11 @@ impl<'a> Scene<'a> {
         Self { core: state }
     }
 
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<&mut Entity> {
-        self.core.get_entity(entity_handle)
+    pub fn get_entity<T: FromEntity>(
+        &mut self,
+        entity_handle: EntityHandle,
+    ) -> anyhow::Result<&mut T> {
+        self.core.get_entity::<T>(entity_handle)
     }
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
@@ -876,6 +884,8 @@ struct App<'a, G: Game> {
     state: Option<EngineState>,
     game: &'a mut G,
     last_frame_time: std::time::Instant,
+    physics_update: f32,
+    clock: f32,
     width: u32,
     height: u32,
     title: String,
@@ -937,6 +947,8 @@ impl<G: Game> Runner<G> {
             state: None,
             game: &mut self.game,
             last_frame_time: std::time::Instant::now(),
+            clock: 0.0,
+            physics_update: 1.0 / 60.0,
             width: self.width,
             height: self.height,
             title: self.title,
@@ -969,58 +981,64 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
                 let current_time = std::time::Instant::now();
                 let delta = (current_time - self.last_frame_time).as_secs_f32();
                 self.last_frame_time = current_time;
+                self.clock += delta;
 
-                let (new_collisions, removed_collision) = state.update();
+                // We run the physics at a set time but we render at the monitors FPS.
+                if self.clock >= self.physics_update {
+                    let (new_collisions, removed_collision) = state.update();
 
-                {
-                    let mut scene = Scene::new(state);
-                    self.game.on_update(delta, &mut scene);
-                }
+                    {
+                        let mut scene = Scene::new(state);
+                        self.game.on_update(delta, &mut scene);
+                    }
 
-                for pair in new_collisions {
-                    let mut scene = Scene::new(state);
+                    for pair in new_collisions {
+                        let mut scene = Scene::new(state);
 
-                    // We send the event twice to rapresent both entities perspective
+                        // We send the event twice to rapresent both entities perspective
 
-                    self.game.on_event(
-                        EngineEvent::CollisionEnter {
-                            entity: pair.0.clone(),
-                            other: pair.1.clone(),
-                        },
-                        &mut scene,
-                    );
+                        self.game.on_event(
+                            EngineEvent::CollisionEnter {
+                                entity: pair.0.clone(),
+                                other: pair.1.clone(),
+                            },
+                            &mut scene,
+                        );
 
-                    let mut scene = Scene::new(state);
+                        let mut scene = Scene::new(state);
 
-                    self.game.on_event(
-                        EngineEvent::CollisionEnter {
-                            entity: pair.1,
-                            other: pair.0,
-                        },
-                        &mut scene,
-                    );
-                }
+                        self.game.on_event(
+                            EngineEvent::CollisionEnter {
+                                entity: pair.1,
+                                other: pair.0,
+                            },
+                            &mut scene,
+                        );
 
-                for pair in removed_collision {
-                    let mut scene = Scene::new(state);
+                        self.clock -= self.physics_update;
+                    }
 
-                    self.game.on_event(
-                        EngineEvent::CollisionExit {
-                            entity: pair.0.clone(),
-                            other: pair.1.clone(),
-                        },
-                        &mut scene,
-                    );
+                    for pair in removed_collision {
+                        let mut scene = Scene::new(state);
 
-                    let mut scene = Scene::new(state);
+                        self.game.on_event(
+                            EngineEvent::CollisionExit {
+                                entity: pair.0.clone(),
+                                other: pair.1.clone(),
+                            },
+                            &mut scene,
+                        );
 
-                    self.game.on_event(
-                        EngineEvent::CollisionExit {
-                            entity: pair.1,
-                            other: pair.0,
-                        },
-                        &mut scene,
-                    );
+                        let mut scene = Scene::new(state);
+
+                        self.game.on_event(
+                            EngineEvent::CollisionExit {
+                                entity: pair.1,
+                                other: pair.0,
+                            },
+                            &mut scene,
+                        );
+                    }
                 }
 
                 match state.render() {

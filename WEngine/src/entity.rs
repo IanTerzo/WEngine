@@ -430,12 +430,11 @@ impl From<EmptyBuilder> for EntityBuilder {
 }
 
 // Engine entity type
-// After spawning the entity using Entity, we store it's "EntityInfo", which contains the actual information that is used for rendering.
-// Data contains information only relevant to the engine, and entity_state contains info that is also relevant to the user and is the user facing part.
 
 #[derive(Clone, Debug)]
 pub struct DynamicBody {
     pub tag: Option<String>,
+    pub transform: Transform,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
     pub children: Vec<Entity>,
@@ -444,6 +443,7 @@ pub struct DynamicBody {
 #[derive(Clone, Debug)]
 pub struct StaticBody {
     pub tag: Option<String>,
+    pub transform: Transform,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
     pub children: Vec<Entity>,
@@ -452,6 +452,7 @@ pub struct StaticBody {
 #[derive(Clone, Debug)]
 pub struct KinematicBody {
     pub tag: Option<String>,
+    pub transform: Transform,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
     pub children: Vec<Entity>,
@@ -469,8 +470,8 @@ pub struct Camera {
 #[derive(Clone, Debug)]
 pub struct MeshInstance {
     pub tag: Option<String>,
-    pub instance_handle: InstanceHandle,
     pub transform: Transform,
+    pub instance_handle: InstanceHandle,
     pub children: Vec<Entity>,
 }
 
@@ -495,6 +496,64 @@ pub enum Entity {
     Camera(Camera),
     MeshInstance(MeshInstance),
     Empty(Empty),
+}
+
+pub trait FromEntity: Sized {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self>;
+}
+
+impl FromEntity for DynamicBody {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::DynamicBody(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
+}
+
+impl FromEntity for StaticBody {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::StaticBody(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
+}
+
+impl FromEntity for KinematicBody {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::KinematicBody(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
+}
+
+impl FromEntity for MeshInstance {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::MeshInstance(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
+}
+
+impl FromEntity for Empty {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::Empty(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
+}
+
+impl FromEntity for Camera {
+    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
+        match e {
+            Entity::Camera(b) => Ok(b),
+            _ => Err(anyhow!("Entity is not a DynamicBody")),
+        }
+    }
 }
 
 fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
@@ -741,6 +800,7 @@ fn create_dynamic_rigidbody(
 
     Entity::DynamicBody(DynamicBody {
         tag: body.tag,
+        transform: body.transform,
         instance_handle,
         rigid_body_handle,
         children: child_infos,
@@ -843,6 +903,7 @@ fn create_static_rigidbody(
 
     Entity::StaticBody(StaticBody {
         tag: body.tag,
+        transform: body.transform,
         instance_handle,
         rigid_body_handle,
         children: child_infos,
@@ -947,6 +1008,7 @@ fn create_kinematic_rigidbody(
 
     Entity::KinematicBody(KinematicBody {
         tag: body.tag,
+        transform: body.transform,
         instance_handle,
         rigid_body_handle,
         children: child_infos,

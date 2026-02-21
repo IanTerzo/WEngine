@@ -1,6 +1,6 @@
 use WEngine::{
     EngineEvent, Game, Runner, Scene, Transform,
-    entity::{Entity, EntityBuilder, EntityHandle},
+    entity::{DynamicBody, Entity, EntityBuilder, EntityHandle, StaticBody},
     model::MeshHandle,
 };
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
@@ -207,12 +207,12 @@ impl Game for MyGame {
             }
 
             // Update camera rotation
-            if let Entity::DynamicBody(rigid_body) =
-                &mut scene.get_entity(player_handle.clone()).unwrap()
-            {
-                if let Entity::Camera(view) = &mut rigid_body.children[0] {
-                    view.transform.rotation = self.camera_controller.get_rotation().into_inner()
-                }
+            let player_body = scene
+                .get_entity::<DynamicBody>(player_handle.clone())
+                .unwrap();
+
+            if let Entity::Camera(view) = &mut player_body.children[0] {
+                view.transform.rotation = self.camera_controller.get_rotation().into_inner()
             }
 
             // Movement logic
@@ -326,49 +326,44 @@ impl Game for MyGame {
                 }
             }
             EngineEvent::CollisionEnter { entity, other } => {
-                let tag_name: Option<String> =
-                    if let Entity::DynamicBody(static_body) = scene.get_entity(entity).unwrap() {
+                fn get_tag(scene: &mut Scene, entity: EntityHandle) -> Option<String> {
+                    if let Ok(static_body) = scene.get_entity::<StaticBody>(entity.clone()) {
                         static_body.tag.clone()
+                    } else if let Ok(dynamic_body) = scene.get_entity::<DynamicBody>(entity.clone())
+                    {
+                        dynamic_body.tag.clone()
                     } else {
                         None
-                    };
+                    }
+                }
 
-                let tag_name_other: Option<String> = if let Entity::StaticBody(static_body) =
-                    scene.get_entity(other.clone()).unwrap()
-                {
-                    static_body.tag.clone()
-                } else if let Entity::DynamicBody(dynamic_body) = scene.get_entity(other).unwrap() {
-                    dynamic_body.tag.clone()
-                } else {
-                    None
-                };
+                let tag_self = get_tag(scene, entity);
+                let tag_other = get_tag(scene, other);
 
-                if tag_name.unwrap_or_default() == "player_body"
-                    && tag_name_other.unwrap_or_default() == "walkable"
+                if tag_self.as_deref() == Some("player_body")
+                    && tag_other.as_deref() == Some("walkable")
                 {
                     self.player_controller.is_on_ground = true;
                 }
             }
+
             EngineEvent::CollisionExit { entity, other } => {
-                let tag_name: Option<String> =
-                    if let Entity::DynamicBody(static_body) = scene.get_entity(entity).unwrap() {
+                fn get_tag(scene: &mut Scene, entity: EntityHandle) -> Option<String> {
+                    if let Ok(static_body) = scene.get_entity::<StaticBody>(entity.clone()) {
                         static_body.tag.clone()
+                    } else if let Ok(dynamic_body) = scene.get_entity::<DynamicBody>(entity.clone())
+                    {
+                        dynamic_body.tag.clone()
                     } else {
                         None
-                    };
+                    }
+                }
 
-                let tag_name_other: Option<String> = if let Entity::StaticBody(static_body) =
-                    scene.get_entity(other.clone()).unwrap()
-                {
-                    static_body.tag.clone()
-                } else if let Entity::DynamicBody(dynamic_body) = scene.get_entity(other).unwrap() {
-                    dynamic_body.tag.clone()
-                } else {
-                    None
-                };
+                let tag_self = get_tag(scene, entity);
+                let tag_other = get_tag(scene, other);
 
-                if tag_name.unwrap_or_default() == "player_body"
-                    && tag_name_other.unwrap_or_default() == "walkable"
+                if tag_self.as_deref() == Some("player_body")
+                    && tag_other.as_deref() == Some("walkable")
                 {
                     self.player_controller.is_on_ground = false;
                 }
