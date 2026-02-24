@@ -1,13 +1,11 @@
 use crate::{
     entity::{
-        Entity, EntityBuilder, EntityHandle, FromEntity, OPENGL_TO_WGPU_MATRIX,
+        CameraRef, DynamicBodyRef, EmptyRef, Entity, EntityBuilder, EntityHandle, EntityRef,
+        KinematicBodyRef, MeshInstanceRef, OPENGL_TO_WGPU_MATRIX, StaticBodyRef,
         get_entity_from_handle, spawn,
     },
     model::{InstanceRaw, MeshData, MeshHandle, ModelVertex, load_obj},
-    physics::{
-        PhysicsWorld, add_force, apply_impulse, get_angvel, get_linvel, set_angvel,
-        set_enabled_rotations, set_linvel,
-    },
+    physics::PhysicsWorld,
 };
 use nalgebra::{
     self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
@@ -81,7 +79,7 @@ pub struct EngineState {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     meshes: Vec<MeshData>,
     camera_uniform: CameraUniform,
-    physics_world: PhysicsWorld,
+    pub physics_world: PhysicsWorld,
     entities: Vec<Entity>,
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
@@ -269,6 +267,8 @@ impl EngineState {
         })
     }
 
+    // Loading models
+
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
         load_obj(
             &self.device,
@@ -279,12 +279,27 @@ impl EngineState {
         )
     }
 
-    pub fn get_entity<T: FromEntity>(
-        &mut self,
+    // Entity management
+
+    pub fn get_entity<'a>(
+        &'a mut self,
         entity_handle: EntityHandle,
-    ) -> anyhow::Result<&mut T> {
+    ) -> anyhow::Result<EntityRef<'a>> {
         let entity = get_entity_from_handle(&mut self.entities, entity_handle)?;
-        T::from_entity(entity)
+        match entity {
+            Entity::StaticBody(e) => Ok(EntityRef::StaticBody(StaticBodyRef { entity: e })),
+            Entity::DynamicBody(e) => Ok(EntityRef::DynamicBody(DynamicBodyRef {
+                entity: e,
+                physics_world: &mut self.physics_world,
+            })),
+            Entity::KinematicBody(e) => Ok(EntityRef::KinematicBody(KinematicBodyRef {
+                entity: e,
+                physics_world: &mut self.physics_world,
+            })),
+            Entity::MeshInstance(e) => Ok(EntityRef::MeshInstance(MeshInstanceRef { entity: e })),
+            Entity::Camera(e) => Ok(EntityRef::Camera(CameraRef { entity: e })),
+            Entity::Empty(e) => Ok(EntityRef::Empty(EmptyRef { entity: e })),
+        }
     }
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
@@ -301,74 +316,7 @@ impl EngineState {
         )
     }
 
-    // Rigidbody functions
-
-    pub fn apply_impulse(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
-        apply_impulse(
-            &mut self.physics_world,
-            &mut self.entities,
-            entity_handle,
-            vector,
-        );
-    }
-
-    pub fn add_force(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
-        add_force(
-            &mut self.physics_world,
-            &mut self.entities,
-            entity_handle,
-            vector,
-        );
-    }
-
-    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
-        get_linvel(&mut self.physics_world, &mut self.entities, entity_handle)
-    }
-
-    pub fn set_linvel(
-        &mut self,
-        entity_handle: EntityHandle,
-        vector: Vector3<f32>,
-    ) -> anyhow::Result<()> {
-        set_linvel(
-            &mut self.physics_world,
-            &mut self.entities,
-            entity_handle,
-            vector,
-        )
-    }
-
-    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
-        get_angvel(&mut self.physics_world, &mut self.entities, entity_handle)
-    }
-
-    pub fn set_angvel(&mut self, entity_handle: EntityHandle, vector: Vector3<f32>) {
-        set_angvel(
-            &mut self.physics_world,
-            &mut self.entities,
-            entity_handle,
-            vector,
-        );
-    }
-
-    pub fn set_enabled_rotations(
-        &mut self,
-        entity_handle: EntityHandle,
-        enable_x: bool,
-        enable_y: bool,
-        enable_z: bool,
-    ) {
-        set_enabled_rotations(
-            &mut self.physics_world,
-            &mut self.entities,
-            entity_handle,
-            enable_x,
-            enable_y,
-            enable_z,
-        );
-    }
-
-    // Instances    TODO: Instance rework
+    // Instances
 
     pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
         self.meshes
@@ -540,22 +488,22 @@ impl EngineState {
                 );
             }
             Entity::Camera(entity) => {
+                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
+                    .transform_vector(&entity.transform.position);
+
+                let camera_position = parent_position + rotated_offset;
+
                 let iso = Isometry::from_parts(
-                    Translation3::from(parent_position + entity.transform.position),
+                    Translation3::from(camera_position), // Use the rotated position
                     UnitQuaternion::from_quaternion(parent_rotation)
                         * UnitQuaternion::from_quaternion(entity.transform.rotation),
                 );
-
                 let view = iso.inverse().to_homogeneous();
-
                 let aspect = self.config.width as f32 / self.config.height as f32;
-
                 let proj =
                     Perspective3::new(aspect, entity.fov.to_radians(), entity.near, entity.far)
                         .to_homogeneous();
-
                 self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
-
                 self.queue.write_buffer(
                     &self.camera_buffer,
                     0,
@@ -779,7 +727,7 @@ impl EngineState {
 }
 
 pub struct Scene<'a> {
-    core: &'a mut EngineState,
+    pub core: &'a mut EngineState,
 }
 
 // User facing abstraction of EngineState
@@ -789,11 +737,8 @@ impl<'a> Scene<'a> {
         Self { core: state }
     }
 
-    pub fn get_entity<T: FromEntity>(
-        &mut self,
-        entity_handle: EntityHandle,
-    ) -> anyhow::Result<&mut T> {
-        self.core.get_entity::<T>(entity_handle)
+    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<EntityRef<'_>> {
+        self.core.get_entity(entity_handle)
     }
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
@@ -802,44 +747,6 @@ impl<'a> Scene<'a> {
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
         self.core.load_obj(path)
-    }
-
-    pub fn add_force(&mut self, entity_handle: EntityHandle, force: Vector3<f32>) {
-        self.core.add_force(entity_handle, force);
-    }
-
-    pub fn get_linvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
-        self.core.get_linvel(entity_handle)
-    }
-
-    pub fn set_linvel(
-        &mut self,
-        entity_handle: EntityHandle,
-        velocity: Vector3<f32>,
-    ) -> anyhow::Result<()> {
-        self.core.set_linvel(entity_handle, velocity)
-    }
-
-    pub fn get_angvel(&mut self, entity_handle: EntityHandle) -> anyhow::Result<Vector3<f32>> {
-        self.core.get_angvel(entity_handle)
-    }
-
-    pub fn set_angvel(&mut self, entity_handle: EntityHandle, velocity: Vector3<f32>) {
-        self.core.set_angvel(entity_handle, velocity);
-    }
-
-    pub fn set_enabled_rotations(
-        &mut self,
-        entity_handle: EntityHandle,
-        enable_x: bool,
-        enable_y: bool,
-        enable_z: bool,
-    ) {
-        self.core
-            .set_enabled_rotations(entity_handle, enable_x, enable_y, enable_z);
-    }
-    pub fn apply_impulse(&mut self, entity_handle: EntityHandle, impulse: Vector3<f32>) {
-        self.core.apply_impulse(entity_handle, impulse);
     }
 
     pub fn grab_cursor(&mut self) {
@@ -1103,7 +1010,6 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
             None => return,
         };
 
-        // Handle raw mouse motion for unlimited camera rotation
         if let winit::event::DeviceEvent::MouseMotion { delta } = event {
             if state.cursor_grabbed {
                 let mut scene = Scene::new(state);
@@ -1126,7 +1032,6 @@ impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
             .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height))
             .with_resizable(self.resizable);
 
-        // Set fullscreen mode if requested
         if self.fullscreen {
             window_attributes =
                 window_attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));

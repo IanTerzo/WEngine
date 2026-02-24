@@ -5,12 +5,9 @@ use wgpu::util::DeviceExt;
 
 impl<'a> Instance {
     pub fn to_raw(&self) -> InstanceRaw {
-        let model_matrix = self.transform.to_matrix(); // convert Transform to 4x4 matrix
+        let model_matrix = self.transform.to_matrix(); // Convert Transform to 4x4 matrix
         InstanceRaw {
             model_matrix: model_matrix.into(),
-            // optional:
-            // material_index: self.material.id as u32,
-            // _padding: [0; 3],
         }
     }
 }
@@ -43,7 +40,7 @@ pub struct MeshHandle(pub usize);
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct InstanceRaw {
-    pub model_matrix: [[f32; 4]; 4], // 4x4 transform matrix
+    pub model_matrix: [[f32; 4]; 4],
 }
 
 impl InstanceRaw {
@@ -52,12 +49,11 @@ impl InstanceRaw {
 
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance, // Important: advances per instance
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                // model_matrix is 4 vec4's, one for each row
                 wgpu::VertexAttribute {
                     offset: 0,
-                    shader_location: 5, // matches your WGSL shader
+                    shader_location: 5,
                     format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
@@ -112,7 +108,6 @@ pub fn load_obj(
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
-    // Load OBJ file synchronously
     let (models, materials) = tobj::load_obj_buf(
         &mut reader,
         &tobj::LoadOptions {
@@ -246,7 +241,7 @@ pub fn load_obj(
         let material = if let Some(mat_id) = mesh.material_id {
             wgpu_materials[mat_id].clone()
         } else {
-            wgpu_materials[0].clone() // fallback to first material
+            wgpu_materials[0].clone() // Fallback to first material
         };
 
         meshes.push(MeshData {

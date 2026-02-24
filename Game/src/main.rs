@@ -1,6 +1,6 @@
 use WEngine::{
     EngineEvent, Game, Runner, Scene, Transform,
-    entity::{DynamicBody, Entity, EntityBuilder, EntityHandle, StaticBody},
+    entity::{EntityBuilder, EntityHandle, EntityRef},
     model::MeshHandle,
 };
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
@@ -120,7 +120,7 @@ struct MyGame {
     camera_controller: CameraController,
     player_controller: PlayerController,
     cube_mesh: Option<MeshHandle>,
-    player_entity: Option<EntityHandle>,
+    player_handle: Option<EntityHandle>,
     cursor_grabbed: bool,
 }
 
@@ -130,7 +130,7 @@ impl MyGame {
             camera_controller: CameraController::new(),
             player_controller: PlayerController::new(),
             cube_mesh: None,
-            player_entity: None,
+            player_handle: None,
             cursor_grabbed: false,
         }
     }
@@ -180,9 +180,15 @@ impl Game for MyGame {
             .gravity_scale(3.5), // Feeles more natural.
         );
 
-        scene.set_enabled_rotations(player_handle.clone(), false, false, false);
+        scene
+            .get_entity(player_handle.clone())
+            .unwrap()
+            .into_dynamicbody()
+            .unwrap()
+            .set_enabled_rotations(false, false, false)
+            .unwrap();
 
-        self.player_entity = Some(player_handle);
+        self.player_handle = Some(player_handle);
         self.cube_mesh = Some(cube_mesh);
 
         scene.grab_cursor();
@@ -190,60 +196,60 @@ impl Game for MyGame {
     }
 
     fn on_update(&mut self, delta: f32, scene: &mut Scene) {
-        if let Some(player_handle) = &self.player_entity {
-            // Handle jumping in update loop instead of event
-            if self.player_controller.is_jump_pressed && self.player_controller.is_on_ground {
-                let current_vel = scene.get_linvel(player_handle.clone()).unwrap();
-                scene
-                    .set_linvel(
-                        player_handle.clone(),
-                        vector![
-                            current_vel.x,
-                            self.player_controller.jump_velocity,
-                            current_vel.z
-                        ],
-                    )
-                    .unwrap();
-            }
+        let Some(player_handle) = self.player_handle.clone() else {
+            return;
+        };
 
-            // Update camera rotation
-            let player_body = scene
-                .get_entity::<DynamicBody>(player_handle.clone())
+        let mut player = scene
+            .get_entity(player_handle.clone())
+            .unwrap()
+            .into_dynamicbody()
+            .unwrap();
+
+        // Handle jumping in update loop instead of event
+        if self.player_controller.is_jump_pressed && self.player_controller.is_on_ground {
+            let current_vel = player.get_linvel().unwrap();
+            player
+                .set_linvel(vector![
+                    current_vel.x,
+                    self.player_controller.jump_velocity,
+                    current_vel.z
+                ])
                 .unwrap();
+        }
 
-            if let Entity::Camera(view) = &mut player_body.children[0] {
-                view.transform.rotation = self.camera_controller.get_rotation().into_inner()
-            }
+        // Movement logic
+        let rot = self.camera_controller.get_rotation();
+        let desired_velocity = self.player_controller.get_movement_direction(rot);
+        let current_vel = player.get_linvel().unwrap();
 
-            // Movement logic
-            let rot = self.camera_controller.get_rotation();
-            let desired_velocity = self.player_controller.get_movement_direction(rot);
-            let current_vel = scene.get_linvel(player_handle.clone()).unwrap();
+        if self.player_controller.is_on_ground {
+            player
+                .set_linvel(vector![
+                    desired_velocity.x,
+                    current_vel.y,
+                    desired_velocity.z
+                ])
+                .unwrap();
+        } else {
+            let current_horizontal = vector![current_vel.x, 0.0, current_vel.z];
+            let adjustment = vector![
+                desired_velocity.x - current_vel.x,
+                0.0,
+                desired_velocity.z - current_vel.z
+            ];
+            let air_influence = self.player_controller.air_control_factor * delta * 20.0;
+            let new_horizontal = current_horizontal + adjustment * air_influence;
 
-            if self.player_controller.is_on_ground {
-                scene
-                    .set_linvel(
-                        player_handle.clone(),
-                        vector![desired_velocity.x, current_vel.y, desired_velocity.z],
-                    )
-                    .unwrap();
-            } else {
-                let current_horizontal = vector![current_vel.x, 0.0, current_vel.z];
-                let adjustment = vector![
-                    desired_velocity.x - current_vel.x,
-                    0.0,
-                    desired_velocity.z - current_vel.z
-                ];
-                let air_influence = self.player_controller.air_control_factor * delta * 20.0;
-                let new_horizontal = current_horizontal + adjustment * air_influence;
+            player
+                .set_linvel(vector![new_horizontal.x, current_vel.y, new_horizontal.z])
+                .unwrap();
+        }
 
-                scene
-                    .set_linvel(
-                        player_handle.clone(),
-                        vector![new_horizontal.x, current_vel.y, new_horizontal.z],
-                    )
-                    .unwrap();
-            }
+        // Update camera rotation
+
+        if let EntityRef::Camera(camera) = &mut player.get_child(0).unwrap() {
+            camera.entity.transform.rotation = self.camera_controller.get_rotation().into_inner()
         }
     }
 
@@ -326,19 +332,16 @@ impl Game for MyGame {
                 }
             }
             EngineEvent::CollisionEnter { entity, other } => {
-                fn get_tag(scene: &mut Scene, entity: EntityHandle) -> Option<String> {
-                    if let Ok(static_body) = scene.get_entity::<StaticBody>(entity.clone()) {
-                        static_body.tag.clone()
-                    } else if let Ok(dynamic_body) = scene.get_entity::<DynamicBody>(entity.clone())
-                    {
-                        dynamic_body.tag.clone()
-                    } else {
-                        None
-                    }
-                }
+                let tag_self = match scene.get_entity(entity).unwrap() {
+                    EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
+                    _ => Some("".to_string()),
+                };
 
-                let tag_self = get_tag(scene, entity);
-                let tag_other = get_tag(scene, other);
+                let tag_other = match scene.get_entity(other).unwrap() {
+                    EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
+                    EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
+                    _ => Some("".to_string()),
+                };
 
                 if tag_self.as_deref() == Some("player_body")
                     && tag_other.as_deref() == Some("walkable")
@@ -348,19 +351,16 @@ impl Game for MyGame {
             }
 
             EngineEvent::CollisionExit { entity, other } => {
-                fn get_tag(scene: &mut Scene, entity: EntityHandle) -> Option<String> {
-                    if let Ok(static_body) = scene.get_entity::<StaticBody>(entity.clone()) {
-                        static_body.tag.clone()
-                    } else if let Ok(dynamic_body) = scene.get_entity::<DynamicBody>(entity.clone())
-                    {
-                        dynamic_body.tag.clone()
-                    } else {
-                        None
-                    }
-                }
+                let tag_self = match scene.get_entity(entity).unwrap() {
+                    EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
+                    _ => Some("".to_string()),
+                };
 
-                let tag_self = get_tag(scene, entity);
-                let tag_other = get_tag(scene, other);
+                let tag_other = match scene.get_entity(other).unwrap() {
+                    EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
+                    EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
+                    _ => Some("".to_string()),
+                };
 
                 if tag_self.as_deref() == Some("player_body")
                     && tag_other.as_deref() == Some("walkable")
@@ -376,6 +376,6 @@ fn main() -> anyhow::Result<()> {
     Runner::new(MyGame::new())
         .window_width(1280)
         .window_height(720)
-        .title("Fixed Size Game")
+        .title("First person controller")
         .run()
 }

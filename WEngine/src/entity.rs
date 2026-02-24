@@ -1,7 +1,9 @@
 // Entity builders
 
-use anyhow::anyhow;
-use nalgebra::{Isometry3, Matrix4, Perspective3, Translation, UnitQuaternion, Vector3};
+use anyhow::{Ok, anyhow};
+use nalgebra::{
+    Isometry3, Matrix4, Perspective3, Quaternion, Translation, Unit, UnitQuaternion, Vector3,
+};
 use rapier3d::prelude::{ColliderBuilder, ColliderHandle};
 use std::collections::HashMap;
 
@@ -27,6 +29,8 @@ pub enum EntityBuilder {
     Camera(CameraBuilder),
     Empty(EmptyBuilder),
 }
+
+// Entity builders
 
 impl EntityBuilder {
     pub fn dynamic_body(transform: Transform) -> DynamicBodyBuilder {
@@ -432,30 +436,30 @@ impl From<EmptyBuilder> for EntityBuilder {
 // Engine entity type
 
 #[derive(Clone, Debug)]
-pub struct DynamicBody {
-    pub tag: Option<String>,
-    pub transform: Transform,
-    pub instance_handle: Option<InstanceHandle>,
-    pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
-    pub children: Vec<Entity>,
-}
-
-#[derive(Clone, Debug)]
 pub struct StaticBody {
     pub tag: Option<String>,
     pub transform: Transform,
+    pub children: Vec<Entity>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
+}
+
+#[derive(Clone, Debug)]
+pub struct DynamicBody {
+    pub tag: Option<String>,
+    pub transform: Transform,
     pub children: Vec<Entity>,
+    pub instance_handle: Option<InstanceHandle>,
+    pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
 }
 
 #[derive(Clone, Debug)]
 pub struct KinematicBody {
     pub tag: Option<String>,
     pub transform: Transform,
+    pub children: Vec<Entity>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
-    pub children: Vec<Entity>,
 }
 
 #[derive(Clone, Debug)]
@@ -471,8 +475,8 @@ pub struct Camera {
 pub struct MeshInstance {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub instance_handle: InstanceHandle,
     pub children: Vec<Entity>,
+    pub instance_handle: InstanceHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -480,12 +484,6 @@ pub struct Empty {
     pub tag: Option<String>,
     pub transform: Transform,
     pub children: Vec<Entity>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct EntityHandle {
-    root: usize,
-    path: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -498,74 +496,192 @@ pub enum Entity {
     Empty(Empty),
 }
 
-pub trait FromEntity: Sized {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EntityHandle {
+    root: usize,
+    path: Vec<usize>,
 }
 
-impl FromEntity for DynamicBody {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::DynamicBody(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
+// Entity references that are passed when using get_entity, holds information from the scene (EngineState)
+
+pub struct StaticBodyRef<'a> {
+    pub entity: &'a mut StaticBody,
+}
+
+pub struct DynamicBodyRef<'a> {
+    pub entity: &'a mut DynamicBody,
+    pub physics_world: &'a mut PhysicsWorld,
+}
+
+pub struct KinematicBodyRef<'a> {
+    pub entity: &'a mut KinematicBody,
+    pub physics_world: &'a mut PhysicsWorld,
+}
+
+pub struct CameraRef<'a> {
+    pub entity: &'a mut Camera,
+}
+
+pub struct MeshInstanceRef<'a> {
+    pub entity: &'a mut MeshInstance,
+}
+
+pub struct EmptyRef<'a> {
+    pub entity: &'a mut Empty,
+}
+
+pub enum EntityRef<'a> {
+    DynamicBody(DynamicBodyRef<'a>),
+    StaticBody(StaticBodyRef<'a>),
+    KinematicBody(KinematicBodyRef<'a>),
+    Camera(CameraRef<'a>),
+    MeshInstance(MeshInstanceRef<'a>),
+    Empty(EmptyRef<'a>),
+}
+
+impl<'a> EntityRef<'a> {
+    // Convenient functions
+    pub fn into_staticbody(self) -> anyhow::Result<StaticBodyRef<'a>> {
+        match self {
+            EntityRef::StaticBody(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a StaticBody")),
+        }
+    }
+
+    pub fn into_dynamicbody(self) -> anyhow::Result<DynamicBodyRef<'a>> {
+        match self {
+            EntityRef::DynamicBody(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a DynamicBody")),
         }
     }
 }
 
-impl FromEntity for StaticBody {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::StaticBody(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
+impl<'a> DynamicBodyRef<'a> {
+    pub fn get_child(&'a mut self, n: usize) -> anyhow::Result<EntityRef<'a>> {
+        let child = self
+            .entity
+            .children
+            .get_mut(n)
+            .ok_or_else(|| anyhow::anyhow!("Child {} not found", n))?;
+
+        match child {
+            Entity::StaticBody(static_body) => Ok(EntityRef::StaticBody(StaticBodyRef {
+                entity: static_body,
+            })),
+            Entity::DynamicBody(dynamic_body) => Ok(EntityRef::DynamicBody(DynamicBodyRef {
+                entity: dynamic_body,
+                physics_world: self.physics_world,
+            })),
+            Entity::KinematicBody(kinematic_body) => {
+                Ok(EntityRef::KinematicBody(KinematicBodyRef {
+                    entity: kinematic_body,
+                    physics_world: self.physics_world,
+                }))
+            }
+            Entity::Camera(camera) => Ok(EntityRef::Camera(CameraRef { entity: camera })),
+            Entity::MeshInstance(mesh_instance) => Ok(EntityRef::MeshInstance(MeshInstanceRef {
+                entity: mesh_instance,
+            })),
+            Entity::Empty(empty) => Ok(EntityRef::Empty(EmptyRef { entity: empty })),
+        }
+    }
+
+    pub fn add_force(&mut self, vector: Vector3<f32>) -> anyhow::Result<()> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get_mut(self.entity.rigid_body_handle)
+        {
+            body.add_force(vector, true);
+
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn get_rotation(&self) -> anyhow::Result<Unit<Quaternion<f32>>> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get(self.entity.rigid_body_handle)
+        {
+            Ok(*body.rotation())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn set_enabled_rotations(
+        &mut self,
+        enable_x: bool,
+        enable_y: bool,
+        enable_z: bool,
+    ) -> anyhow::Result<()> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get_mut(self.entity.rigid_body_handle)
+        {
+            body.set_enabled_rotations(enable_x, enable_y, enable_z, true);
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn set_linvel(&mut self, vector: Vector3<f32>) -> anyhow::Result<()> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get_mut(self.entity.rigid_body_handle)
+        {
+            body.set_linvel(vector, true);
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn get_linvel(&self) -> anyhow::Result<Vector3<f32>> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get(self.entity.rigid_body_handle)
+        {
+            Ok(*body.linvel())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn set_angvel(&mut self, vector: Vector3<f32>) -> anyhow::Result<()> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get_mut(self.entity.rigid_body_handle)
+        {
+            body.set_angvel(vector, true);
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn get_angvel(&self) -> anyhow::Result<Vector3<f32>> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get(self.entity.rigid_body_handle)
+        {
+            Ok(*body.angvel())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
         }
     }
 }
 
-impl FromEntity for KinematicBody {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::KinematicBody(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
-        }
-    }
-}
-
-impl FromEntity for MeshInstance {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::MeshInstance(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
-        }
-    }
-}
-
-impl FromEntity for Empty {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::Empty(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
-        }
-    }
-}
-
-impl FromEntity for Camera {
-    fn from_entity(e: &mut Entity) -> anyhow::Result<&mut Self> {
-        match e {
-            Entity::Camera(b) => Ok(b),
-            _ => Err(anyhow!("Entity is not a DynamicBody")),
-        }
-    }
-}
-
-fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
-    match entity {
-        Entity::DynamicBody(e) => Some(&mut e.children),
-        Entity::StaticBody(e) => Some(&mut e.children),
-        Entity::KinematicBody(e) => Some(&mut e.children),
-        Entity::MeshInstance(e) => Some(&mut e.children),
-        Entity::Empty(e) => Some(&mut e.children),
-        Entity::Camera(_) => None, // cameras have no children
-    }
-}
+// Entity management and creation
 
 pub fn get_entity_from_handle<'a>(
     entities: &'a mut Vec<Entity>,
@@ -583,6 +699,17 @@ pub fn get_entity_from_handle<'a>(
             .ok_or_else(|| anyhow!("Invalid child index: {}", index))?;
     }
     Ok(entity)
+}
+
+fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
+    match entity {
+        Entity::DynamicBody(e) => Some(&mut e.children),
+        Entity::StaticBody(e) => Some(&mut e.children),
+        Entity::KinematicBody(e) => Some(&mut e.children),
+        Entity::MeshInstance(e) => Some(&mut e.children),
+        Entity::Empty(e) => Some(&mut e.children),
+        Entity::Camera(_) => None, // cameras have no children
+    }
 }
 
 pub fn spawn(
