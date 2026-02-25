@@ -1021,7 +1021,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
                             scene.scene.on_update(delta, &mut scene_context);
 
-                            self.scenes.push(scene);
+                            self.scenes.insert(i, scene);
                         }
                     }
 
@@ -1047,10 +1047,10 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                         );
 
                         for i in 0..self.scenes.len() {
-                            let scene = self.scenes.remove(i);
+                            let mut scene = self.scenes.remove(i);
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            self.main.scene.on_event(
+                            scene.scene.on_event(
                                 EngineEvent::CollisionEnter {
                                     entity: pair.0.clone(),
                                     other: pair.1.clone(),
@@ -1060,7 +1060,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
 
-                            self.main.scene.on_event(
+                            scene.scene.on_event(
                                 EngineEvent::CollisionEnter {
                                     entity: pair.1.clone(),
                                     other: pair.0.clone(),
@@ -1068,7 +1068,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                                 &mut scene_context,
                             );
 
-                            self.scenes.push(scene);
+                            self.scenes.insert(i, scene);
                         }
                     }
 
@@ -1092,11 +1092,11 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                         );
 
                         for i in 0..self.scenes.len() {
-                            let scene = self.scenes.remove(i);
+                            let mut scene = self.scenes.remove(i);
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            self.main.scene.on_event(
-                                EngineEvent::CollisionEnter {
+                            scene.scene.on_event(
+                                EngineEvent::CollisionExit {
                                     entity: pair.0.clone(),
                                     other: pair.1.clone(),
                                 },
@@ -1104,15 +1104,15 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                             );
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            self.main.scene.on_event(
-                                EngineEvent::CollisionEnter {
+                            scene.scene.on_event(
+                                EngineEvent::CollisionExit {
                                     entity: pair.1.clone(),
                                     other: pair.0.clone(),
                                 },
                                 &mut scene_context,
                             );
 
-                            self.scenes.push(scene);
+                            self.scenes.insert(i, scene);
                         }
                     }
 
@@ -1150,6 +1150,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                     &mut scene_context,
                 );
 
+                //len is 1
                 for i in 0..self.scenes.len() {
                     let mut scene = self.scenes.remove(i);
                     let mut scene_context = SceneContext::new(state, &mut self.scenes);
@@ -1160,7 +1161,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                         },
                         &mut scene_context,
                     );
-                    self.scenes.push(scene);
+                    self.scenes.insert(i, scene);
                 }
             }
 
@@ -1188,7 +1189,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                         },
                         &mut scene_context,
                     );
-                    self.scenes.push(scene);
+                    self.scenes.insert(i, scene);
                 }
             }
 
@@ -1228,7 +1229,7 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                         },
                         &mut scene_context,
                     );
-                    self.scenes.push(scene);
+                    self.scenes.insert(i, scene);
                 }
             }
         }
