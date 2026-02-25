@@ -1,18 +1,19 @@
 use crate::{
     entity::{
         CameraRef, DynamicBodyRef, EmptyRef, Entity, EntityBuilder, EntityHandle, EntityRef,
-        KinematicBodyRef, MeshInstanceRef, OPENGL_TO_WGPU_MATRIX, StaticBodyRef,
+        KinematicBodyRef, MeshInstanceRef, OPENGL_TO_WGPU_MATRIX, PointLightRef, StaticBodyRef,
         get_entity_from_handle, spawn,
     },
-    model::{InstanceRaw, MeshData, MeshHandle, ModelVertex, load_obj},
+    model::{InstanceRaw, MeshData, MeshHandle, load_obj},
     physics::PhysicsWorld,
 };
 use nalgebra::{
-    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
+    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3,
 };
 use rapier3d::prelude::ColliderHandle;
 use std::{
     collections::{HashMap, HashSet},
+    hash::Hash,
     sync::Arc,
 };
 use wgpu::util::DeviceExt;
@@ -23,6 +24,17 @@ use winit::{
     keyboard::PhysicalKey,
     window::Window,
 };
+
+// light
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct LightUniform {
+    position: [f32; 3],
+    // Due to uniforms requiring 16 byte (4 float) spacing, we need to use a padding field here
+    _padding: u32,
+    color: [f32; 3],
+    _padding2: u32,
+}
 
 pub mod entity;
 pub mod model;
@@ -84,6 +96,71 @@ pub struct EngineState {
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
     cursor_grabbed: bool,
+    light_uniform: LightUniform,
+    light_buffer: wgpu::Buffer,
+    light_bind_group: wgpu::BindGroup,
+    light_render_pipeline: wgpu::RenderPipeline,
+}
+
+fn create_render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    color_format: wgpu::TextureFormat,
+    depth_format: Option<wgpu::TextureFormat>,
+    vertex_layouts: &[wgpu::VertexBufferLayout],
+    shader: wgpu::ShaderModuleDescriptor,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(shader);
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: vertex_layouts,
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState {
+                    alpha: wgpu::BlendComponent::REPLACE,
+                    color: wgpu::BlendComponent::REPLACE,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+            polygon_mode: wgpu::PolygonMode::Fill,
+            // Requires Features::DEPTH_CLIP_CONTROL
+            unclipped_depth: false,
+            // Requires Features::CONSERVATIVE_RASTERIZATION
+            conservative: false,
+        },
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+        cache: None,
+    })
 }
 
 impl EngineState {
@@ -202,46 +279,92 @@ impl EngineState {
         let depth_texture =
             texture::Texture::create_depth_texture(&device, &config, "depth-texture");
 
+        // Lighting
+
+        let light_uniform = LightUniform {
+            position: [2.0, 2.0, 2.0],
+            _padding: 0,
+            color: [1.0, 1.0, 1.0],
+            _padding2: 0,
+        };
+
+        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Light VB"),
+            contents: bytemuck::cast_slice(&[light_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let light_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: None,
+            });
+
+        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &light_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: light_buffer.as_entire_binding(),
+            }],
+            label: None,
+        });
+
         // Create render pipeline
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &camera_bind_group_layout,
+                    &light_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: texture::Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let render_pipeline = {
+            let shader = wgpu::ShaderModuleDescriptor {
+                label: Some("Normal Shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            };
+            create_render_pipeline(
+                &device,
+                &render_pipeline_layout,
+                config.format,
+                Some(texture::Texture::DEPTH_FORMAT),
+                &[model::ModelVertex::desc(), InstanceRaw::desc()],
+                shader,
+            )
+        };
+
+        let light_render_pipeline = {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Light Pipeline Layout"),
+                bind_group_layouts: &[&camera_bind_group_layout, &light_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+            let shader = wgpu::ShaderModuleDescriptor {
+                label: Some("Light Shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("light.wgsl").into()),
+            };
+            create_render_pipeline(
+                &device,
+                &layout,
+                config.format,
+                Some(texture::Texture::DEPTH_FORMAT),
+                &[model::ModelVertex::desc()],
+                shader,
+            )
+        };
 
         let physics_world = PhysicsWorld::new();
 
@@ -264,6 +387,10 @@ impl EngineState {
             collider_entity_pairs: HashMap::new(),
             active_collisions: HashSet::new(),
             cursor_grabbed: false,
+            light_uniform,
+            light_buffer,
+            light_bind_group,
+            light_render_pipeline,
         })
     }
 
@@ -299,6 +426,7 @@ impl EngineState {
             Entity::MeshInstance(e) => Ok(EntityRef::MeshInstance(MeshInstanceRef { entity: e })),
             Entity::Camera(e) => Ok(EntityRef::Camera(CameraRef { entity: e })),
             Entity::Empty(e) => Ok(EntityRef::Empty(EmptyRef { entity: e })),
+            Entity::PointLight(e) => Ok(EntityRef::PointLight(PointLightRef { entity: e })),
         }
     }
 
@@ -524,6 +652,20 @@ impl EngineState {
                     self.rigid_body_trickle_down_update(child, new_position, new_rotation);
                 }
             }
+            Entity::PointLight(entity) => {
+                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
+                    .transform_vector(&entity.transform.position);
+
+                let new_position = parent_position + rotated_offset;
+
+                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
+                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
+                .into_inner();
+
+                for child in &entity.children {
+                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                }
+            }
         }
     }
 
@@ -614,6 +756,19 @@ impl EngineState {
             }
         }
 
+        let old_position = Vector3::from(self.light_uniform.position);
+        let axis = Unit::new_normalize(Vector3::new(0.0, 1.0, 0.0));
+        let rotation = UnitQuaternion::from_axis_angle(&axis, 1.0f32.to_radians());
+        let new_position = rotation * old_position;
+
+        self.light_uniform.position = new_position.into();
+
+        self.queue.write_buffer(
+            &self.light_buffer,
+            0,
+            bytemuck::cast_slice(&[self.light_uniform]),
+        );
+
         let current_collisions: HashSet<(EntityHandle, EntityHandle)> = self
             .physics_world
             .narrow_phase
@@ -697,6 +852,15 @@ impl EngineState {
                 ..Default::default()
             });
 
+            // Lights
+
+            rp.set_pipeline(&self.light_render_pipeline);
+            rp.set_bind_group(2, &self.light_bind_group, &[]);
+
+            // TODO
+
+            // Meshes
+
             rp.set_pipeline(&self.render_pipeline);
             rp.set_bind_group(1, &self.camera_bind_group, &[]);
 
@@ -726,15 +890,24 @@ impl EngineState {
     }
 }
 
-pub struct Scene<'a> {
-    pub core: &'a mut EngineState,
+pub struct SceneInstance {
+    pub scene: Box<dyn Scene>,
+    pub is_active: bool,
+}
+
+pub struct SceneContext<'a> {
+    core: &'a mut EngineState,
+    scenes: &'a mut Vec<SceneInstance>,
 }
 
 // User facing abstraction of EngineState
 
-impl<'a> Scene<'a> {
-    pub(crate) fn new(state: &'a mut EngineState) -> Self {
-        Self { core: state }
+impl<'a> SceneContext<'a> {
+    pub(crate) fn new(state: &'a mut EngineState, scenes: &'a mut Vec<SceneInstance>) -> Self {
+        Self {
+            core: state,
+            scenes,
+        }
     }
 
     pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<EntityRef<'_>> {
@@ -743,6 +916,17 @@ impl<'a> Scene<'a> {
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
         self.core.spawn(entity)
+    }
+
+    pub fn instantiate_scene(&mut self, scene: impl Scene + 'static) {
+        self.scenes.push(SceneInstance {
+            scene: Box::new(scene),
+            is_active: false,
+        });
+    }
+
+    pub fn get_scene() {
+        // Allows you to set the transform (scale, position, rotation)
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
@@ -781,15 +965,10 @@ pub enum EngineEvent {
     },
 }
 
-pub trait Game {
-    fn on_init(&mut self, _state: &mut Scene) {}
-    fn on_update(&mut self, _delta_time: f32, _state: &mut Scene) {}
-    fn on_event(&mut self, _event: EngineEvent, _state: &mut Scene) {}
-}
-
-struct App<'a, G: Game> {
+struct App<'a> {
     state: Option<EngineState>,
-    game: &'a mut G,
+    main: &'a mut SceneInstance,
+    scenes: Vec<SceneInstance>,
     last_frame_time: std::time::Instant,
     physics_update: f32,
     clock: f32,
@@ -800,8 +979,298 @@ struct App<'a, G: Game> {
     resizable: bool,
 }
 
-pub struct Runner<G: Game> {
-    game: G,
+// Based on the window "event" or action we run the correct function in game.
+
+impl<'a> ApplicationHandler<EngineState> for App<'a> {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let state: &mut EngineState = match &mut self.state {
+            Some(canvas) => canvas,
+            None => return,
+        };
+
+        match event {
+            WindowEvent::RedrawRequested => {
+                let current_time = std::time::Instant::now();
+                let delta = (current_time - self.last_frame_time).as_secs_f32();
+                self.last_frame_time = current_time;
+                self.clock += delta;
+
+                // We run the physics at a set time but we render at the monitors FPS.
+                if self.clock >= self.physics_update {
+                    let (new_collisions, removed_collision) = state.update();
+
+                    {
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        self.main.scene.on_update(delta, &mut scene_context);
+
+                        for i in 0..self.scenes.len() {
+                            let mut scene = self.scenes.remove(i);
+
+                            if !scene.is_active {
+                                let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                                scene.scene.on_init(&mut scene_context);
+
+                                scene.is_active = true;
+                            }
+
+                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                            scene.scene.on_update(delta, &mut scene_context);
+
+                            self.scenes.push(scene);
+                        }
+                    }
+
+                    for pair in new_collisions {
+                        // We send the event twice to rapresent both entities perspective
+
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        self.main.scene.on_event(
+                            EngineEvent::CollisionEnter {
+                                entity: pair.0.clone(),
+                                other: pair.1.clone(),
+                            },
+                            &mut scene_context,
+                        );
+
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        self.main.scene.on_event(
+                            EngineEvent::CollisionEnter {
+                                entity: pair.1.clone(),
+                                other: pair.0.clone(),
+                            },
+                            &mut scene_context,
+                        );
+
+                        for i in 0..self.scenes.len() {
+                            let scene = self.scenes.remove(i);
+
+                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                            self.main.scene.on_event(
+                                EngineEvent::CollisionEnter {
+                                    entity: pair.0.clone(),
+                                    other: pair.1.clone(),
+                                },
+                                &mut scene_context,
+                            );
+
+                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
+
+                            self.main.scene.on_event(
+                                EngineEvent::CollisionEnter {
+                                    entity: pair.1.clone(),
+                                    other: pair.0.clone(),
+                                },
+                                &mut scene_context,
+                            );
+
+                            self.scenes.push(scene);
+                        }
+                    }
+
+                    for pair in removed_collision {
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        self.main.scene.on_event(
+                            EngineEvent::CollisionExit {
+                                entity: pair.0.clone(),
+                                other: pair.1.clone(),
+                            },
+                            &mut scene_context,
+                        );
+
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        self.main.scene.on_event(
+                            EngineEvent::CollisionExit {
+                                entity: pair.1.clone(),
+                                other: pair.0.clone(),
+                            },
+                            &mut scene_context,
+                        );
+
+                        for i in 0..self.scenes.len() {
+                            let scene = self.scenes.remove(i);
+
+                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                            self.main.scene.on_event(
+                                EngineEvent::CollisionEnter {
+                                    entity: pair.0.clone(),
+                                    other: pair.1.clone(),
+                                },
+                                &mut scene_context,
+                            );
+
+                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                            self.main.scene.on_event(
+                                EngineEvent::CollisionEnter {
+                                    entity: pair.1.clone(),
+                                    other: pair.0.clone(),
+                                },
+                                &mut scene_context,
+                            );
+
+                            self.scenes.push(scene);
+                        }
+                    }
+
+                    self.clock -= self.physics_update;
+                }
+
+                match state.render() {
+                    Ok(_) => {}
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        let size = state.window.inner_size();
+                        state.resize(size.width, size.height);
+                    }
+                    Err(e) => {
+                        log::error!("Unable to render {}", e);
+                    }
+                }
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => state.resize(size.width, size.height),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key,
+                        state: key_state,
+                        ..
+                    },
+                ..
+            } => {
+                let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                self.main.scene.on_event(
+                    EngineEvent::Key {
+                        physical_key,
+                        pressed: key_state.is_pressed(),
+                    },
+                    &mut scene_context,
+                );
+
+                for i in 0..self.scenes.len() {
+                    let mut scene = self.scenes.remove(i);
+                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                    scene.scene.on_event(
+                        EngineEvent::Key {
+                            physical_key,
+                            pressed: key_state.is_pressed(),
+                        },
+                        &mut scene_context,
+                    );
+                    self.scenes.push(scene);
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state: button_state,
+                button,
+                ..
+            } => {
+                let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                self.main.scene.on_event(
+                    EngineEvent::MouseButton {
+                        button,
+                        pressed: button_state == ElementState::Pressed,
+                    },
+                    &mut scene_context,
+                );
+
+                for i in 0..self.scenes.len() {
+                    let mut scene = self.scenes.remove(i);
+                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                    scene.scene.on_event(
+                        EngineEvent::MouseButton {
+                            button,
+                            pressed: button_state == ElementState::Pressed,
+                        },
+                        &mut scene_context,
+                    );
+                    self.scenes.push(scene);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let state: &mut EngineState = match &mut self.state {
+            Some(canvas) => canvas,
+            None => return,
+        };
+
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            if state.cursor_grabbed {
+                let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                self.main.scene.on_event(
+                    EngineEvent::MouseMotion {
+                        delta_x: delta.0,
+                        delta_y: delta.1,
+                    },
+                    &mut scene_context,
+                );
+
+                for i in 0..self.scenes.len() {
+                    let mut scene = self.scenes.remove(i);
+                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                    scene.scene.on_event(
+                        EngineEvent::MouseMotion {
+                            delta_x: delta.0,
+                            delta_y: delta.1,
+                        },
+                        &mut scene_context,
+                    );
+                    self.scenes.push(scene);
+                }
+            }
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        use winit::window::Fullscreen;
+
+        let mut window_attributes = Window::default_attributes()
+            .with_title(&self.title)
+            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height))
+            .with_resizable(self.resizable);
+
+        if self.fullscreen {
+            window_attributes =
+                window_attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
+
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        let mut state = pollster::block_on(EngineState::new(window.clone())).unwrap();
+
+        {
+            let mut scene = SceneContext::new(&mut state, &mut self.scenes);
+            self.main.scene.on_init(&mut scene);
+        }
+        self.state = Some(state);
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: EngineState) {
+        self.state = Some(event);
+    }
+}
+
+pub trait Scene {
+    fn on_init(&mut self, _ctx: &mut SceneContext) {}
+    fn on_update(&mut self, _delta_time: f32, _ctx: &mut SceneContext) {}
+    fn on_event(&mut self, _event: EngineEvent, _ctx: &mut SceneContext) {}
+}
+
+pub struct Runner {
+    main: SceneInstance,
     width: u32,
     height: u32,
     title: String,
@@ -809,10 +1278,13 @@ pub struct Runner<G: Game> {
     resizable: bool,
 }
 
-impl<G: Game> Runner<G> {
-    pub fn new(game: G) -> Self {
+impl Runner {
+    pub fn new(main: impl Scene + 'static) -> Self {
         Self {
-            game,
+            main: SceneInstance {
+                scene: Box::new(main),
+                is_active: true,
+            },
             width: 800,
             height: 600,
             title: "WEngine Game".to_string(),
@@ -852,7 +1324,8 @@ impl<G: Game> Runner<G> {
         let event_loop = EventLoop::with_user_event().build()?;
         let mut app = App {
             state: None,
-            game: &mut self.game,
+            main: &mut self.main,
+            scenes: vec![],
             last_frame_time: std::time::Instant::now(),
             clock: 0.0,
             physics_update: 1.0 / 60.0,
@@ -866,189 +1339,5 @@ impl<G: Game> Runner<G> {
         event_loop.run_app(&mut app)?;
 
         Ok(())
-    }
-}
-
-// Based on the window "event" or action we run the correct function in game.
-
-impl<'a, G: Game> ApplicationHandler<EngineState> for App<'a, G> {
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        let state: &mut EngineState = match &mut self.state {
-            Some(canvas) => canvas,
-            None => return,
-        };
-
-        match event {
-            WindowEvent::RedrawRequested => {
-                let current_time = std::time::Instant::now();
-                let delta = (current_time - self.last_frame_time).as_secs_f32();
-                self.last_frame_time = current_time;
-                self.clock += delta;
-
-                // We run the physics at a set time but we render at the monitors FPS.
-                if self.clock >= self.physics_update {
-                    let (new_collisions, removed_collision) = state.update();
-
-                    {
-                        let mut scene = Scene::new(state);
-                        self.game.on_update(delta, &mut scene);
-                    }
-
-                    for pair in new_collisions {
-                        let mut scene = Scene::new(state);
-
-                        // We send the event twice to rapresent both entities perspective
-
-                        self.game.on_event(
-                            EngineEvent::CollisionEnter {
-                                entity: pair.0.clone(),
-                                other: pair.1.clone(),
-                            },
-                            &mut scene,
-                        );
-
-                        let mut scene = Scene::new(state);
-
-                        self.game.on_event(
-                            EngineEvent::CollisionEnter {
-                                entity: pair.1,
-                                other: pair.0,
-                            },
-                            &mut scene,
-                        );
-
-                        self.clock -= self.physics_update;
-                    }
-
-                    for pair in removed_collision {
-                        let mut scene = Scene::new(state);
-
-                        self.game.on_event(
-                            EngineEvent::CollisionExit {
-                                entity: pair.0.clone(),
-                                other: pair.1.clone(),
-                            },
-                            &mut scene,
-                        );
-
-                        let mut scene = Scene::new(state);
-
-                        self.game.on_event(
-                            EngineEvent::CollisionExit {
-                                entity: pair.1,
-                                other: pair.0,
-                            },
-                            &mut scene,
-                        );
-                    }
-                }
-
-                match state.render() {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        let size = state.window.inner_size();
-                        state.resize(size.width, size.height);
-                    }
-                    Err(e) => {
-                        log::error!("Unable to render {}", e);
-                    }
-                }
-            }
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => state.resize(size.width, size.height),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key,
-                        state: key_state,
-                        ..
-                    },
-                ..
-            } => {
-                let mut scene = Scene::new(state);
-                self.game.on_event(
-                    EngineEvent::Key {
-                        physical_key,
-                        pressed: key_state.is_pressed(),
-                    },
-                    &mut scene,
-                );
-            }
-
-            WindowEvent::MouseInput {
-                state: button_state,
-                button,
-                ..
-            } => {
-                let mut scene = Scene::new(state);
-                self.game.on_event(
-                    EngineEvent::MouseButton {
-                        button,
-                        pressed: button_state == ElementState::Pressed,
-                    },
-                    &mut scene,
-                );
-            }
-
-            _ => {}
-        }
-    }
-
-    fn device_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _device_id: winit::event::DeviceId,
-        event: winit::event::DeviceEvent,
-    ) {
-        let state: &mut EngineState = match &mut self.state {
-            Some(canvas) => canvas,
-            None => return,
-        };
-
-        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
-            if state.cursor_grabbed {
-                let mut scene = Scene::new(state);
-                self.game.on_event(
-                    EngineEvent::MouseMotion {
-                        delta_x: delta.0,
-                        delta_y: delta.1,
-                    },
-                    &mut scene,
-                );
-            }
-        }
-    }
-
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        use winit::window::Fullscreen;
-
-        let mut window_attributes = Window::default_attributes()
-            .with_title(&self.title)
-            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height))
-            .with_resizable(self.resizable);
-
-        if self.fullscreen {
-            window_attributes =
-                window_attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
-
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-
-        let mut state = pollster::block_on(EngineState::new(window.clone())).unwrap();
-
-        {
-            let mut scene = Scene::new(&mut state);
-            self.game.on_init(&mut scene);
-        }
-        self.state = Some(state);
-    }
-
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: EngineState) {
-        self.state = Some(event);
     }
 }

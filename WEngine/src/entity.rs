@@ -28,6 +28,7 @@ pub enum EntityBuilder {
     MeshInstance(MeshInstanceBuilder),
     Camera(CameraBuilder),
     Empty(EmptyBuilder),
+    PointLight(PointLightBuilder),
 }
 
 // Entity builders
@@ -55,6 +56,10 @@ impl EntityBuilder {
 
     pub fn empty(transform: Transform) -> EmptyBuilder {
         EmptyBuilder::new(transform)
+    }
+
+    pub fn point_light(transform: Transform) -> PointLightBuilder {
+        PointLightBuilder::new(transform)
     }
 }
 
@@ -107,6 +112,12 @@ pub struct CameraBuilder {
 }
 
 pub struct EmptyBuilder {
+    pub tag: Option<String>,
+    pub transform: Transform,
+    pub children: Vec<EntityBuilder>,
+}
+
+pub struct PointLightBuilder {
     pub tag: Option<String>,
     pub transform: Transform,
     pub children: Vec<EntityBuilder>,
@@ -398,6 +409,26 @@ impl EmptyBuilder {
     }
 }
 
+impl PointLightBuilder {
+    pub fn new(transform: Transform) -> Self {
+        Self {
+            tag: None,
+            transform,
+            children: vec![],
+        }
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
+    pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+}
+
 impl From<DynamicBodyBuilder> for EntityBuilder {
     fn from(body: DynamicBodyBuilder) -> Self {
         EntityBuilder::DynamicBody(body)
@@ -430,6 +461,12 @@ impl From<MeshInstanceBuilder> for EntityBuilder {
 impl From<EmptyBuilder> for EntityBuilder {
     fn from(empty: EmptyBuilder) -> Self {
         EntityBuilder::Empty(empty)
+    }
+}
+
+impl From<PointLightBuilder> for EntityBuilder {
+    fn from(empty: PointLightBuilder) -> Self {
+        EntityBuilder::PointLight(empty)
     }
 }
 
@@ -487,6 +524,13 @@ pub struct Empty {
 }
 
 #[derive(Clone, Debug)]
+pub struct PointLight {
+    pub tag: Option<String>,
+    pub transform: Transform,
+    pub children: Vec<Entity>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Entity {
     DynamicBody(DynamicBody),
     StaticBody(StaticBody),
@@ -494,6 +538,7 @@ pub enum Entity {
     Camera(Camera),
     MeshInstance(MeshInstance),
     Empty(Empty),
+    PointLight(PointLight),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -530,6 +575,10 @@ pub struct EmptyRef<'a> {
     pub entity: &'a mut Empty,
 }
 
+pub struct PointLightRef<'a> {
+    pub entity: &'a mut PointLight,
+}
+
 pub enum EntityRef<'a> {
     DynamicBody(DynamicBodyRef<'a>),
     StaticBody(StaticBodyRef<'a>),
@@ -537,6 +586,7 @@ pub enum EntityRef<'a> {
     Camera(CameraRef<'a>),
     MeshInstance(MeshInstanceRef<'a>),
     Empty(EmptyRef<'a>),
+    PointLight(PointLightRef<'a>),
 }
 
 impl<'a> EntityRef<'a> {
@@ -583,6 +633,9 @@ impl<'a> DynamicBodyRef<'a> {
                 entity: mesh_instance,
             })),
             Entity::Empty(empty) => Ok(EntityRef::Empty(EmptyRef { entity: empty })),
+            Entity::PointLight(point_light) => Ok(EntityRef::PointLight(PointLightRef {
+                entity: point_light,
+            })),
         }
     }
 
@@ -709,6 +762,7 @@ fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
         Entity::MeshInstance(e) => Some(&mut e.children),
         Entity::Empty(e) => Some(&mut e.children),
         Entity::Camera(_) => None, // cameras have no children
+        Entity::PointLight(e) => Some(&mut e.children),
     }
 }
 
@@ -820,6 +874,18 @@ fn create(
             entity_root_index,
             path,
             empty,
+        ),
+        EntityBuilder::PointLight(point_light) => create_point_light(
+            meshes,
+            collider_enitity_pairs,
+            physics_world,
+            queue,
+            camera_uniform,
+            camera_buffer,
+            config,
+            entity_root_index,
+            path,
+            point_light,
         ),
     }
 }
@@ -1267,6 +1333,48 @@ fn create_empty(
         .collect();
 
     Entity::Empty(Empty {
+        tag: empty.tag,
+        transform: empty.transform,
+        children: child_infos,
+    })
+}
+
+fn create_point_light(
+    meshes: &mut Vec<MeshData>,
+    collider_enitity_pairs: &mut HashMap<ColliderHandle, EntityHandle>,
+    physics_world: &mut PhysicsWorld,
+    queue: &wgpu::Queue,
+    camera_uniform: &mut CameraUniform,
+    camera_buffer: &wgpu::Buffer,
+    config: &wgpu::SurfaceConfiguration,
+    root: usize,
+    path: Vec<usize>,
+    empty: PointLightBuilder,
+) -> Entity {
+    let child_infos: Vec<_> = empty
+        .children
+        .into_iter()
+        .enumerate()
+        .map(|(i, child)| {
+            let mut path = path.clone();
+            path.push(i);
+
+            create(
+                meshes,
+                collider_enitity_pairs,
+                physics_world,
+                queue,
+                camera_uniform,
+                camera_buffer,
+                config,
+                root,
+                path,
+                child,
+            )
+        })
+        .collect();
+
+    Entity::PointLight(PointLight {
         tag: empty.tag,
         transform: empty.transform,
         children: child_infos,

@@ -1,11 +1,15 @@
 use WEngine::{
-    EngineEvent, Game, Runner, Scene, Transform,
+    EngineEvent, Runner, Scene, SceneContext, Transform,
     entity::{EntityBuilder, EntityHandle, EntityRef},
     model::MeshHandle,
 };
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use rand::random_range;
 use winit::keyboard::{KeyCode, PhysicalKey};
+
+use crate::cube::Cube;
+
+mod cube;
 
 struct CameraController {
     sensitivity: f32,
@@ -116,7 +120,7 @@ impl PlayerController {
     }
 }
 
-struct MyGame {
+struct Main {
     camera_controller: CameraController,
     player_controller: PlayerController,
     cube_mesh: Option<MeshHandle>,
@@ -124,7 +128,7 @@ struct MyGame {
     cursor_grabbed: bool,
 }
 
-impl MyGame {
+impl Main {
     fn new() -> Self {
         Self {
             camera_controller: CameraController::new(),
@@ -136,13 +140,13 @@ impl MyGame {
     }
 }
 
-impl Game for MyGame {
-    fn on_init(&mut self, scene: &mut Scene) {
-        let cube_mesh = scene.load_obj("../res/cube.obj").unwrap()[0];
+impl Scene for Main {
+    fn on_init(&mut self, ctx: &mut SceneContext) {
+        let cube_mesh = ctx.load_obj("../res/cube.obj").unwrap()[0];
 
         // Ground
 
-        scene.spawn(
+        ctx.spawn(
             EntityBuilder::static_body(Transform {
                 position: vector![0.0, -30.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
@@ -156,7 +160,7 @@ impl Game for MyGame {
 
         // Player
 
-        let player_handle = scene.spawn(
+        let player_handle = ctx.spawn(
             EntityBuilder::dynamic_body(Transform {
                 position: vector![0.0, 0.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
@@ -180,8 +184,7 @@ impl Game for MyGame {
             .gravity_scale(3.5), // Feeles more natural.
         );
 
-        scene
-            .get_entity(player_handle.clone())
+        ctx.get_entity(player_handle.clone())
             .unwrap()
             .into_dynamicbody()
             .unwrap()
@@ -191,22 +194,23 @@ impl Game for MyGame {
         self.player_handle = Some(player_handle);
         self.cube_mesh = Some(cube_mesh);
 
-        scene.grab_cursor();
+        ctx.grab_cursor();
         self.cursor_grabbed = true;
     }
 
-    fn on_update(&mut self, delta: f32, scene: &mut Scene) {
+    fn on_update(&mut self, delta: f32, ctx: &mut SceneContext) {
         let Some(player_handle) = self.player_handle.clone() else {
             return;
         };
 
-        let mut player = scene
+        let mut player = ctx
             .get_entity(player_handle.clone())
             .unwrap()
             .into_dynamicbody()
             .unwrap();
 
-        // Handle jumping in update loop instead of event
+        // Jump logic
+
         if self.player_controller.is_jump_pressed && self.player_controller.is_on_ground {
             let current_vel = player.get_linvel().unwrap();
             player
@@ -219,6 +223,7 @@ impl Game for MyGame {
         }
 
         // Movement logic
+
         let rot = self.camera_controller.get_rotation();
         let desired_velocity = self.player_controller.get_movement_direction(rot);
         let current_vel = player.get_linvel().unwrap();
@@ -253,7 +258,7 @@ impl Game for MyGame {
         }
     }
 
-    fn on_event(&mut self, event: EngineEvent, scene: &mut Scene) {
+    fn on_event(&mut self, event: EngineEvent, ctx: &mut SceneContext) {
         match event {
             EngineEvent::Key {
                 physical_key,
@@ -280,40 +285,11 @@ impl Game for MyGame {
                             return;
                         }
 
-                        if let Some(cube_mesh) = self.cube_mesh {
-                            scene.spawn(
-                                EntityBuilder::dynamic_body(Transform {
-                                    position: vector![
-                                        random_range(-5..5) as f32,
-                                        0.0,
-                                        random_range(-5..5) as f32
-                                    ],
-                                    rotation: UnitQuaternion::from_axis_angle(
-                                        &Vector3::y_axis(),
-                                        0.0f32,
-                                    )
-                                    .into_inner(),
-                                    scale: vector![1.0, 1.0, 1.0],
-                                })
-                                .mesh(cube_mesh)
-                                .collider_cuboid(vector![1.0, 1.0, 1.0])
-                                .tag("walkable"),
-                            );
-                        }
-                    }
-                    KeyCode::Escape => {
-                        if !pressed {
-                            return;
-                        }
-
-                        // Toggle cursor grab
-                        if self.cursor_grabbed {
-                            scene.release_cursor();
-                            self.cursor_grabbed = false;
-                        } else {
-                            scene.grab_cursor();
-                            self.cursor_grabbed = true;
-                        }
+                        ctx.instantiate_scene(Cube::new(vector![
+                            random_range(-5..5) as f32,
+                            0.0,
+                            random_range(-5..5) as f32
+                        ]));
                     }
                     _ => {}
                 },
@@ -325,19 +301,18 @@ impl Game for MyGame {
                 }
             }
             EngineEvent::MouseButton { button: _, pressed } => {
-                // Optional: grab cursor on mouse click
                 if pressed && !self.cursor_grabbed {
-                    scene.grab_cursor();
+                    ctx.grab_cursor();
                     self.cursor_grabbed = true;
                 }
             }
             EngineEvent::CollisionEnter { entity, other } => {
-                let tag_self = match scene.get_entity(entity).unwrap() {
+                let tag_self = match ctx.get_entity(entity).unwrap() {
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
                 };
 
-                let tag_other = match scene.get_entity(other).unwrap() {
+                let tag_other = match ctx.get_entity(other).unwrap() {
                     EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
@@ -351,12 +326,12 @@ impl Game for MyGame {
             }
 
             EngineEvent::CollisionExit { entity, other } => {
-                let tag_self = match scene.get_entity(entity).unwrap() {
+                let tag_self = match ctx.get_entity(entity).unwrap() {
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
                 };
 
-                let tag_other = match scene.get_entity(other).unwrap() {
+                let tag_other = match ctx.get_entity(other).unwrap() {
                     EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
@@ -373,7 +348,7 @@ impl Game for MyGame {
 }
 
 fn main() -> anyhow::Result<()> {
-    Runner::new(MyGame::new())
+    Runner::new(Main::new())
         .window_width(1280)
         .window_height(720)
         .title("First person controller")
