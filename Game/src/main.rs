@@ -36,7 +36,7 @@ impl Scene for Main {
 
         // Player
 
-        ctx.instantiate_scene(Player::new());
+        ctx.spawn_scene(Player::new());
     }
 
     fn on_event(&mut self, event: EngineEvent, ctx: &mut SceneContext) {
@@ -51,7 +51,7 @@ impl Scene for Main {
                             return;
                         }
 
-                        ctx.instantiate_scene(Cube::new(vector![
+                        ctx.spawn_scene(Cube::new(vector![
                             random_range(-5..5) as f32,
                             0.0,
                             random_range(-5..5) as f32

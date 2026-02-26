@@ -918,7 +918,7 @@ impl<'a> SceneContext<'a> {
         self.core.spawn(entity)
     }
 
-    pub fn instantiate_scene(&mut self, scene: impl Scene + 'static) {
+    pub fn spawn_scene(&mut self, scene: impl Scene + 'static) {
         self.scenes.push(SceneInstance {
             scene: Box::new(scene),
             is_active: false,
@@ -965,9 +965,8 @@ pub enum EngineEvent {
     },
 }
 
-struct App<'a> {
+struct App {
     state: Option<EngineState>,
-    main: &'a mut SceneInstance,
     scenes: Vec<SceneInstance>,
     last_frame_time: std::time::Instant,
     physics_update: f32,
@@ -981,7 +980,7 @@ struct App<'a> {
 
 // Based on the window "event" or action we run the correct function in game.
 
-impl<'a> ApplicationHandler<EngineState> for App<'a> {
+impl ApplicationHandler<EngineState> for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1005,9 +1004,6 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                     let (new_collisions, removed_collision) = state.update();
 
                     {
-                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                        self.main.scene.on_update(delta, &mut scene_context);
-
                         for i in 0..self.scenes.len() {
                             let mut scene = self.scenes.remove(i);
 
@@ -1026,27 +1022,9 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                     }
 
                     for pair in new_collisions {
-                        // We send the event twice to rapresent both entities perspective
-
-                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                        self.main.scene.on_event(
-                            EngineEvent::CollisionEnter {
-                                entity: pair.0.clone(),
-                                other: pair.1.clone(),
-                            },
-                            &mut scene_context,
-                        );
-
-                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                        self.main.scene.on_event(
-                            EngineEvent::CollisionEnter {
-                                entity: pair.1.clone(),
-                                other: pair.0.clone(),
-                            },
-                            &mut scene_context,
-                        );
-
                         for i in 0..self.scenes.len() {
+                            // We send the event twice to rapresent both entities perspective
+
                             let mut scene = self.scenes.remove(i);
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
@@ -1073,24 +1051,6 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                     }
 
                     for pair in removed_collision {
-                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                        self.main.scene.on_event(
-                            EngineEvent::CollisionExit {
-                                entity: pair.0.clone(),
-                                other: pair.1.clone(),
-                            },
-                            &mut scene_context,
-                        );
-
-                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                        self.main.scene.on_event(
-                            EngineEvent::CollisionExit {
-                                entity: pair.1.clone(),
-                                other: pair.0.clone(),
-                            },
-                            &mut scene_context,
-                        );
-
                         for i in 0..self.scenes.len() {
                             let mut scene = self.scenes.remove(i);
 
@@ -1141,16 +1101,6 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                     },
                 ..
             } => {
-                let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                self.main.scene.on_event(
-                    EngineEvent::Key {
-                        physical_key,
-                        pressed: key_state.is_pressed(),
-                    },
-                    &mut scene_context,
-                );
-
-                //len is 1
                 for i in 0..self.scenes.len() {
                     let mut scene = self.scenes.remove(i);
                     let mut scene_context = SceneContext::new(state, &mut self.scenes);
@@ -1170,15 +1120,6 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
                 button,
                 ..
             } => {
-                let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                self.main.scene.on_event(
-                    EngineEvent::MouseButton {
-                        button,
-                        pressed: button_state == ElementState::Pressed,
-                    },
-                    &mut scene_context,
-                );
-
                 for i in 0..self.scenes.len() {
                     let mut scene = self.scenes.remove(i);
                     let mut scene_context = SceneContext::new(state, &mut self.scenes);
@@ -1210,15 +1151,6 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
 
         if let winit::event::DeviceEvent::MouseMotion { delta } = event {
             if state.cursor_grabbed {
-                let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                self.main.scene.on_event(
-                    EngineEvent::MouseMotion {
-                        delta_x: delta.0,
-                        delta_y: delta.1,
-                    },
-                    &mut scene_context,
-                );
-
                 for i in 0..self.scenes.len() {
                     let mut scene = self.scenes.remove(i);
                     let mut scene_context = SceneContext::new(state, &mut self.scenes);
@@ -1250,12 +1182,8 @@ impl<'a> ApplicationHandler<EngineState> for App<'a> {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        let mut state = pollster::block_on(EngineState::new(window.clone())).unwrap();
+        let state = pollster::block_on(EngineState::new(window.clone())).unwrap();
 
-        {
-            let mut scene = SceneContext::new(&mut state, &mut self.scenes);
-            self.main.scene.on_init(&mut scene);
-        }
         self.state = Some(state);
     }
 
@@ -1284,7 +1212,7 @@ impl Runner {
         Self {
             main: SceneInstance {
                 scene: Box::new(main),
-                is_active: true,
+                is_active: false,
             },
             width: 800,
             height: 600,
@@ -1319,14 +1247,13 @@ impl Runner {
         self
     }
 
-    pub fn run(mut self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<()> {
         env_logger::init();
 
         let event_loop = EventLoop::with_user_event().build()?;
         let mut app = App {
             state: None,
-            main: &mut self.main,
-            scenes: vec![],
+            scenes: vec![self.main],
             last_frame_time: std::time::Instant::now(),
             clock: 0.0,
             physics_update: 1.0 / 60.0,

@@ -158,7 +158,7 @@ impl Scene for Player {
             )
             .collider_capsule(0.9, 0.5)
             .tag("player_body")
-            .gravity_scale(3.5), // Feeles more natural.
+            .gravity_scale(3.5),
         );
 
         ctx.get_entity(player_handle.clone())
