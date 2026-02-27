@@ -657,6 +657,8 @@ impl EngineState {
     ) {
         self.physics_world.step();
 
+        // This system is weird, it should be reworked.
+
         for i in 0..self.entities.len() {
             let (position, rotation, instance_handle, children) = {
                 let entity_info = &mut self.entities[i];
@@ -701,6 +703,24 @@ impl EngineState {
 
                         (position, rotation, rigid_body.instance_handle, children)
                     }
+                    Entity::MeshInstance(mesh_instance) => {
+                        let children = std::mem::take(&mut mesh_instance.children);
+                        (
+                            mesh_instance.transform.position,
+                            mesh_instance.transform.rotation,
+                            Some(mesh_instance.instance_handle),
+                            children,
+                        )
+                    }
+                    Entity::Empty(empty) => {
+                        let children = std::mem::take(&mut empty.children);
+                        (
+                            empty.transform.position,
+                            empty.transform.rotation,
+                            None,
+                            children,
+                        )
+                    }
                     _ => continue,
                 }
             };
@@ -731,6 +751,12 @@ impl EngineState {
                 }
                 Entity::KinematicBody(rigid_body) => {
                     rigid_body.children = children;
+                }
+                Entity::MeshInstance(mesh_instance) => {
+                    mesh_instance.children = children;
+                }
+                Entity::Empty(empty) => {
+                    empty.children = children;
                 }
                 _ => unreachable!(),
             }

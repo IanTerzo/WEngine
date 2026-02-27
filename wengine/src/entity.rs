@@ -1276,6 +1276,11 @@ fn create_mesh_instance(
 
     let instance_index = mesh_data.instances.len() - 1;
 
+    let instance_handle = InstanceHandle {
+        mesh: mesh_instance.mesh_handle,
+        instance_index,
+    };
+
     let child_infos: Vec<_> = mesh_instance
         .children
         .into_iter()
@@ -1303,10 +1308,7 @@ fn create_mesh_instance(
 
     Entity::MeshInstance(MeshInstance {
         tag: mesh_instance.tag,
-        instance_handle: InstanceHandle {
-            mesh: mesh_instance.mesh_handle,
-            instance_index,
-        },
+        instance_handle: instance_handle,
         transform: mesh_instance.transform,
         children: child_infos,
     })

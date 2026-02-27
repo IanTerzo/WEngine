@@ -143,35 +143,56 @@ pub fn load_obj(
             Ok(tobj::load_mtl_buf(&mut mat_reader)?)
         },
     )?;
-
     // Load WGPU materials
     let mut wgpu_materials = Vec::new();
     if materials.clone()?.len() > 0 {
         for mat in materials? {
-            let diffuse_texture = texture::Texture::from_file(
-                &device,
-                &queue,
-                path.parent()
-                    .unwrap()
-                    .join(&mat.diffuse_texture)
-                    .to_str()
-                    .unwrap(),
-            )?;
+            let (diffuse_texture, bind_group) = if !mat.diffuse_texture.is_empty() {
+                let tex = texture::Texture::from_file(
+                    &device,
+                    &queue,
+                    path.parent()
+                        .unwrap()
+                        .join(&mat.diffuse_texture)
+                        .to_str()
+                        .unwrap(),
+                )?;
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                    },
-                ],
-                label: None,
-            });
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&tex.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&tex.sampler),
+                        },
+                    ],
+                    label: None,
+                });
+
+                (tex, bg)
+            } else {
+                let tex = texture::Texture::from_color(&device, &queue, mat.diffuse)?;
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&tex.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&tex.sampler),
+                        },
+                    ],
+                    label: None,
+                });
+
+                (tex, bg)
+            };
 
             wgpu_materials.push(Material {
                 name: mat.name,
