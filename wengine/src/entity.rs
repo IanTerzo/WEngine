@@ -16,7 +16,7 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
 );
 
 use crate::{
-    CameraUniform, Instance, InstanceHandle, Transform,
+    CameraUniform, Instance, InstanceHandle, LightHandle, LightUniform, Transform,
     model::{MeshData, MeshHandle},
     physics::{ColliderConfig, PhysicsWorld},
 };
@@ -121,6 +121,8 @@ pub struct PointLightBuilder {
     pub tag: Option<String>,
     pub transform: Transform,
     pub children: Vec<EntityBuilder>,
+    pub color: [f32; 3],
+    pub strength: f32,
 }
 
 impl DynamicBodyBuilder {
@@ -415,6 +417,8 @@ impl PointLightBuilder {
             tag: None,
             transform,
             children: vec![],
+            color: [1.0, 1.0, 1.0],
+            strength: 1.0,
         }
     }
 
@@ -425,6 +429,16 @@ impl PointLightBuilder {
 
     pub fn add_child(mut self, child: impl Into<EntityBuilder>) -> Self {
         self.children.push(child.into());
+        self
+    }
+
+    pub fn color(mut self, color: [f32; 3]) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn strength(mut self, strength: f32) -> Self {
+        self.strength = strength;
         self
     }
 }
@@ -528,6 +542,9 @@ pub struct PointLight {
     pub tag: Option<String>,
     pub transform: Transform,
     pub children: Vec<Entity>,
+    pub color: [f32; 3],
+    pub strenght: f32,
+    pub light_handle: LightHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -775,6 +792,8 @@ pub fn spawn(
     camera_uniform: &mut CameraUniform,
     camera_buffer: &wgpu::Buffer,
     config: &wgpu::SurfaceConfiguration,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     entity: impl Into<EntityBuilder>,
 ) -> EntityHandle {
     let entity = create(
@@ -787,6 +806,8 @@ pub fn spawn(
         config,
         entities.len(),
         vec![],
+        lights,
+        light_buffer,
         entity,
     );
     entities.push(entity);
@@ -807,6 +828,8 @@ fn create(
     config: &wgpu::SurfaceConfiguration,
     entity_root_index: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     entity: impl Into<EntityBuilder>,
 ) -> Entity {
     let entity = entity.into();
@@ -822,6 +845,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             dynamic,
         ),
         EntityBuilder::StaticBody(static_body) => create_static_rigidbody(
@@ -834,6 +859,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             static_body,
         ),
         EntityBuilder::KinematicBody(kinematic) => create_kinematic_rigidbody(
@@ -846,6 +873,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             kinematic,
         ),
         EntityBuilder::MeshInstance(mesh_instance) => create_mesh_instance(
@@ -858,6 +887,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             mesh_instance,
         ),
         EntityBuilder::Camera(camera) => {
@@ -873,6 +904,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             empty,
         ),
         EntityBuilder::PointLight(point_light) => create_point_light(
@@ -885,6 +918,8 @@ fn create(
             config,
             entity_root_index,
             path,
+            lights,
+            light_buffer,
             point_light,
         ),
     }
@@ -900,6 +935,8 @@ fn create_dynamic_rigidbody(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     body: DynamicBodyBuilder,
 ) -> Entity {
     let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
@@ -986,6 +1023,8 @@ fn create_dynamic_rigidbody(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
@@ -1010,6 +1049,8 @@ fn create_static_rigidbody(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     body: StaticBodyBuilder,
 ) -> Entity {
     let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
@@ -1089,6 +1130,8 @@ fn create_static_rigidbody(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
@@ -1113,6 +1156,8 @@ fn create_kinematic_rigidbody(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     body: KinematicBodyBuilder,
 ) -> Entity {
     let unit_quat = UnitQuaternion::from_quaternion(body.transform.rotation);
@@ -1194,6 +1239,8 @@ fn create_kinematic_rigidbody(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
@@ -1218,6 +1265,8 @@ fn create_mesh_instance(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     mesh_instance: MeshInstanceBuilder,
 ) -> Entity {
     let mesh_data = meshes.get_mut(mesh_instance.mesh_handle.0).unwrap();
@@ -1245,6 +1294,8 @@ fn create_mesh_instance(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
@@ -1283,6 +1334,7 @@ fn create_camera(
         .to_homogeneous();
 
     camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
+    camera_uniform.view_position = camera.transform.position.to_homogeneous().into();
 
     queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
 
@@ -1307,6 +1359,8 @@ fn create_empty(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
     empty: EmptyBuilder,
 ) -> Entity {
     let child_infos: Vec<_> = empty
@@ -1327,6 +1381,8 @@ fn create_empty(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
@@ -1349,9 +1405,26 @@ fn create_point_light(
     config: &wgpu::SurfaceConfiguration,
     root: usize,
     path: Vec<usize>,
-    empty: PointLightBuilder,
+    lights: &mut Vec<LightUniform>,
+    light_buffer: &wgpu::Buffer,
+    point_light: PointLightBuilder,
 ) -> Entity {
-    let child_infos: Vec<_> = empty
+    let light = LightUniform {
+        position: point_light.transform.position.into(),
+        _padding: 0,
+        color: point_light.color,
+        _padding2: 0,
+        strength: point_light.strength,
+        _padding3: [0, 0, 0],
+    };
+
+    lights.push(light);
+
+    let light_handle = LightHandle(lights.len() - 1);
+
+    queue.write_buffer(&light_buffer, 0, bytemuck::cast_slice(&lights));
+
+    let child_infos: Vec<_> = point_light
         .children
         .into_iter()
         .enumerate()
@@ -1369,14 +1442,19 @@ fn create_point_light(
                 config,
                 root,
                 path,
+                lights,
+                light_buffer,
                 child,
             )
         })
         .collect();
 
     Entity::PointLight(PointLight {
-        tag: empty.tag,
-        transform: empty.transform,
+        tag: point_light.tag,
+        transform: point_light.transform,
         children: child_infos,
+        color: point_light.color,
+        strenght: point_light.strength,
+        light_handle: light_handle,
     })
 }

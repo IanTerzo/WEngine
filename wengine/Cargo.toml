@@ -1,10 +1,10 @@
 [package]
-name = "WEngine"
+name = "wengine"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "WEngine"
+name = "wengine"
 path = "src/lib.rs"
 
 [dependencies]

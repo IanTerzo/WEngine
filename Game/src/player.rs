@@ -1,4 +1,4 @@
-use WEngine::{
+use wengine::{
     EngineEvent, Scene, SceneContext, Transform,
     entity::{EntityBuilder, EntityHandle, EntityRef},
 };
@@ -156,6 +156,12 @@ impl Scene for Player {
                 })
                 .fov(80.0),
             )
+            .add_child(EntityBuilder::point_light(Transform {
+                position: vector![0.0, 0.0, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
+                    .into_inner(),
+                scale: vector![0.0, 0.0, 0.0],
+            }))
             .collider_capsule(0.9, 0.5)
             .tag("player_body")
             .gravity_scale(3.5),

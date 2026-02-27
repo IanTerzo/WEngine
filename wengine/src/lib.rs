@@ -8,7 +8,7 @@ use crate::{
     physics::PhysicsWorld,
 };
 use nalgebra::{
-    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3,
+    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
 };
 use rapier3d::prelude::ColliderHandle;
 use std::{
@@ -25,23 +25,13 @@ use winit::{
     window::Window,
 };
 
-// light
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct LightUniform {
-    position: [f32; 3],
-    // Due to uniforms requiring 16 byte (4 float) spacing, we need to use a padding field here
-    _padding: u32,
-    color: [f32; 3],
-    _padding2: u32,
-}
-
 pub mod entity;
 pub mod model;
 pub mod physics;
 pub mod texture;
 
 const MAX_INSTANCES: usize = 100;
+const MAX_LIGHTS: usize = 100;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transform {
@@ -74,8 +64,23 @@ pub struct Instance {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
+    view_position: [f32; 4],
     view_proj: [[f32; 4]; 4],
 }
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct LightUniform {
+    position: [f32; 3],
+    _padding: u32,
+    color: [f32; 3],
+    _padding2: u32,
+    strength: f32,
+    _padding3: [u32; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct LightHandle(pub usize);
 
 pub struct EngineState {
     surface: wgpu::Surface<'static>,
@@ -96,10 +101,9 @@ pub struct EngineState {
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
     cursor_grabbed: bool,
-    light_uniform: LightUniform,
+    lights: Vec<LightUniform>,
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
-    light_render_pipeline: wgpu::RenderPipeline,
 }
 
 fn create_render_pipeline(
@@ -209,6 +213,7 @@ impl EngineState {
         // Creates necessary buffer and bind group for the camera
 
         let camera_uniform = CameraUniform {
+            view_position: [0.0; 4],
             view_proj: Matrix4::identity().into(),
         };
 
@@ -222,7 +227,7 @@ impl EngineState {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -267,13 +272,6 @@ impl EngineState {
                 label: Some("texture_bind_group_layout"),
             });
 
-        // Create shader module
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
-
         // Create depth texture
 
         let depth_texture =
@@ -281,26 +279,20 @@ impl EngineState {
 
         // Lighting
 
-        let light_uniform = LightUniform {
-            position: [2.0, 2.0, 2.0],
-            _padding: 0,
-            color: [1.0, 1.0, 1.0],
-            _padding2: 0,
-        };
-
-        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Light VB"),
-            contents: bytemuck::cast_slice(&[light_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            size: (std::mem::size_of::<LightUniform>() * MAX_LIGHTS) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let light_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -346,26 +338,6 @@ impl EngineState {
             )
         };
 
-        let light_render_pipeline = {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Light Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &light_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-            let shader = wgpu::ShaderModuleDescriptor {
-                label: Some("Light Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("light.wgsl").into()),
-            };
-            create_render_pipeline(
-                &device,
-                &layout,
-                config.format,
-                Some(texture::Texture::DEPTH_FORMAT),
-                &[model::ModelVertex::desc()],
-                shader,
-            )
-        };
-
         let physics_world = PhysicsWorld::new();
 
         Ok(Self {
@@ -387,10 +359,9 @@ impl EngineState {
             collider_entity_pairs: HashMap::new(),
             active_collisions: HashSet::new(),
             cursor_grabbed: false,
-            light_uniform,
+            lights: vec![],
             light_buffer,
             light_bind_group,
-            light_render_pipeline,
         })
     }
 
@@ -440,6 +411,8 @@ impl EngineState {
             &mut self.camera_uniform,
             &self.camera_buffer,
             &self.config,
+            &mut self.lights,
+            &self.light_buffer,
             entity,
         )
     }
@@ -662,6 +635,13 @@ impl EngineState {
                     * UnitQuaternion::from_quaternion(entity.transform.rotation))
                 .into_inner();
 
+                self.lights[entity.light_handle.0].position = new_position.into();
+                self.lights[entity.light_handle.0].color = entity.color;
+                self.lights[entity.light_handle.0].strength = entity.strenght;
+
+                self.queue
+                    .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.lights));
+
                 for child in &entity.children {
                     self.rigid_body_trickle_down_update(child, new_position, new_rotation);
                 }
@@ -756,18 +736,12 @@ impl EngineState {
             }
         }
 
-        let old_position = Vector3::from(self.light_uniform.position);
-        let axis = Unit::new_normalize(Vector3::new(0.0, 1.0, 0.0));
-        let rotation = UnitQuaternion::from_axis_angle(&axis, 1.0f32.to_radians());
-        let new_position = rotation * old_position;
+        // Lights
 
-        self.light_uniform.position = new_position.into();
+        self.queue
+            .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.lights));
 
-        self.queue.write_buffer(
-            &self.light_buffer,
-            0,
-            bytemuck::cast_slice(&[self.light_uniform]),
-        );
+        // Collisions
 
         let current_collisions: HashSet<(EntityHandle, EntityHandle)> = self
             .physics_world
@@ -852,22 +826,16 @@ impl EngineState {
                 ..Default::default()
             });
 
-            // Lights
-
-            rp.set_pipeline(&self.light_render_pipeline);
-            rp.set_bind_group(2, &self.light_bind_group, &[]);
-
-            // TODO
-
             // Meshes
 
             rp.set_pipeline(&self.render_pipeline);
             rp.set_bind_group(1, &self.camera_bind_group, &[]);
+            rp.set_bind_group(2, &self.light_bind_group, &[]);
 
             for mesh_data in &self.meshes {
                 let instance_count = mesh_data.instances.len() as u32;
                 if instance_count == 0 {
-                    continue; // Skip if no instances, Not really, or kinda?
+                    continue; // Skip if no instances
                 }
 
                 let mesh = &mesh_data.mesh;

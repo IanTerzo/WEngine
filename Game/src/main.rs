@@ -1,6 +1,6 @@
-use WEngine::{EngineEvent, Runner, Scene, SceneContext, Transform, entity::EntityBuilder};
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use rand::random_range;
+use wengine::{EngineEvent, Runner, Scene, SceneContext, Transform, entity::EntityBuilder};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::{cube::Cube, player::Player};
@@ -18,7 +18,7 @@ impl Main {
 
 impl Scene for Main {
     fn on_init(&mut self, ctx: &mut SceneContext) {
-        // Ground
+        // World
 
         let cube_mesh = ctx.load_obj("../res/cube.obj").unwrap()[0];
 
