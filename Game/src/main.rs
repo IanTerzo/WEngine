@@ -1,10 +1,6 @@
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use rand::random_range;
-use wengine::{
-    EngineEvent, Runner, Scene, SceneContext, Transform,
-    entity::{EmptyBuilder, EntityBuilder},
-    model::MeshHandle,
-};
+use wengine::{EngineEvent, Runner, Scene, SceneContext, Transform, entity::EntityBuilder};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::{cube::Cube, player::Player};
@@ -31,11 +27,32 @@ impl Scene for Main {
                 position: vector![0.0, -30.0, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
-                scale: vector![10.0, 1.0, 10.0],
+                scale: vector![40.0, 1.0, 40.0],
             })
-            .collider_cuboid(vector![10.0, 1.0, 10.0])
+            .collider_cuboid(vector![40.0, 1.0, 40.0])
             .mesh(cube_mesh)
             .tag("walkable"),
+        );
+
+        ctx.spawn(
+            EntityBuilder::mesh_instance(
+                cube_mesh,
+                Transform {
+                    position: vector![0.0, -25.0, 0.0],
+                    rotation: UnitQuaternion::from_axis_angle(
+                        &Vector3::y_axis(),
+                        0.0f32.to_radians(),
+                    )
+                    .into_inner(),
+                    scale: vector![1.0, 1.0, 1.0],
+                },
+            )
+            .add_child(EntityBuilder::point_light(Transform {
+                position: vector![0.0, 0.0, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
+                    .into_inner(),
+                scale: vector![0.0, 0.0, 0.0],
+            })),
         );
 
         // Player

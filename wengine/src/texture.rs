@@ -82,8 +82,6 @@ impl Texture {
         queue: &wgpu::Queue,
         color: [f32; 3], // RGB color
     ) -> anyhow::Result<Self> {
-        use wgpu::util::DeviceExt;
-
         // Convert f32 [0.0..1.0] -> u8 [0..255]
         let r = (color[0] * 255.0) as u8;
         let g = (color[1] * 255.0) as u8;

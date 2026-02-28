@@ -72,11 +72,11 @@ pub struct CameraUniform {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightUniform {
     position: [f32; 3],
-    _padding: u32,
+    _padding: f32,
     color: [f32; 3],
-    _padding2: u32,
+    _padding2: f32,
     strength: f32,
-    _padding3: [u32; 3],
+    _padding3: [f32; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +115,6 @@ fn create_render_pipeline(
     shader: wgpu::ShaderModuleDescriptor,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(shader);
-
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
         layout: Some(layout),
@@ -638,9 +637,6 @@ impl EngineState {
                 self.lights[entity.light_handle.0].position = new_position.into();
                 self.lights[entity.light_handle.0].color = entity.color;
                 self.lights[entity.light_handle.0].strength = entity.strenght;
-
-                self.queue
-                    .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.lights));
 
                 for child in &entity.children {
                     self.rigid_body_trickle_down_update(child, new_position, new_rotation);

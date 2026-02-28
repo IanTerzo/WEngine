@@ -68,51 +68,65 @@ struct CameraUniform {
 }
 @group(1) @binding(0)
 var<uniform> camera: CameraUniform;
+
 struct Light {
     position: vec3<f32>,
     _pad1: f32,
     color: vec3<f32>,
     _pad2: f32,
     strength: f32,
-    _pad3: vec3<f32>,
 }
-
 @group(2) @binding(0)
 var<storage, read> lights: array<Light>;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let object_color: vec4<f32> = textureSample(t_diffuse, s_diffuse, in.tex_coords);
 
-    let ambient_strength = 0.07;
-    var total_light = vec3<f32>(0.0);
+    let object_color =
+        textureSample(t_diffuse, s_diffuse, in.tex_coords);
+
+    let base_radius = 40.0;
+
+    let N = normalize(in.world_normal);
+    let V = normalize(camera.view_pos.xyz - in.world_position);
+
+    let k_a: f32 = 0.05;
+    let k_d: f32 = 1.0;
+    let k_s: f32 = 0.5;
+    let shininess: f32 = 32.0;
+
+    var ambient: vec3<f32>  = vec3<f32>(0.0);
+    var diffuse: vec3<f32>  = vec3<f32>(0.0);
+    var specular: vec3<f32> = vec3<f32>(0.0);
 
     for (var i = 0u; i < arrayLength(&lights); i++) {
-        let light = lights[i];
 
-        let ambient_color = light.color * ambient_strength;
+        let light = lights[i];
 
         let to_light = light.position - in.world_position;
         let distance = length(to_light);
+        let L = normalize(to_light);
 
-        let radius = light.strength * 20.0;
+        let ambient_radius  = base_radius * 1.5 * light.strength;
+        let diffuse_radius  = base_radius * 1.0 * light.strength;
+        let specular_radius = base_radius * 0.6 * light.strength;
 
-        var diffuse_color = vec3<f32>(0.0);
+        let ambient_intensity  = smoothstep(ambient_radius,  0.0, distance);
+        let diffuse_intensity  = smoothstep(diffuse_radius,  0.0, distance);
+        let specular_intensity = smoothstep(specular_radius, 0.0, distance);
 
-        if (radius > 0.001 && distance < radius) {
-            let light_dir = normalize(to_light);
+        ambient += light.color * ambient_intensity * k_a;
 
-            let diffuse_strength = max(dot(normalize(in.world_normal), light_dir), 0.0);
+        let diff = max(dot(N, L), 0.0);
+        diffuse += light.color * diff * diffuse_intensity * k_d;
 
-            // Smooth falloff to zero at radius
-            let attenuation = 1.0 - (distance / radius);
-
-            diffuse_color = light.color * diffuse_strength * attenuation;
-        }
-
-        total_light += ambient_color + diffuse_color;
+        let H = normalize(L + V);
+        let spec = pow(max(dot(N, H), 0.0), shininess);
+        specular += light.color * spec * specular_intensity * k_s;
     }
 
-    let result = total_light * object_color.xyz;
-    return vec4<f32>(result, object_color.a);
+    let final_color =
+        object_color.xyz * (ambient + diffuse) + specular;
+
+    return vec4<f32>(final_color, object_color.a);
 }

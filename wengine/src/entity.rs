@@ -1413,11 +1413,11 @@ fn create_point_light(
 ) -> Entity {
     let light = LightUniform {
         position: point_light.transform.position.into(),
-        _padding: 0,
+        _padding: 0.0,
         color: point_light.color,
-        _padding2: 0,
+        _padding2: 0.0,
         strength: point_light.strength,
-        _padding3: [0, 0, 0],
+        _padding3: [0.0, 0.0, 0.0],
     };
 
     lights.push(light);
