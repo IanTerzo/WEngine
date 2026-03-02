@@ -55,6 +55,13 @@ impl Transform {
 pub struct InstanceHandle {
     pub mesh: MeshHandle,
     pub instance_index: usize,
+    pub instance_type: InstanceType,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum InstanceType {
+    Standard,
+    Light,
 }
 
 pub struct Instance {
@@ -88,7 +95,8 @@ pub struct EngineState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
-    render_pipeline: wgpu::RenderPipeline,
+    standard_pipeline: wgpu::RenderPipeline,
+    light_pipeline: wgpu::RenderPipeline,
     pub window: Arc<Window>,
     depth_texture: texture::Texture,
     camera_buffer: wgpu::Buffer,
@@ -279,7 +287,7 @@ impl EngineState {
         // Lighting
 
         let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Light VB"),
+            label: Some("Light Buffer"),
             size: (std::mem::size_of::<LightUniform>() * MAX_LIGHTS) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -309,11 +317,34 @@ impl EngineState {
             label: None,
         });
 
-        // Create render pipeline
+        // Lights pipeline
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
+        let light_pipeline = {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Light Pipeline Layout"),
+                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+            let shader = wgpu::ShaderModuleDescriptor {
+                label: Some("Light Shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("light.wgsl").into()),
+            };
+            create_render_pipeline(
+                &device,
+                &layout,
+                config.format,
+                Some(texture::Texture::DEPTH_FORMAT),
+                &[model::ModelVertex::desc(), InstanceRaw::desc()],
+                shader,
+            )
+        };
+
+        // Standard pipeline
+
+        let standard_pipeline = {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Standard Pipeline Layout"),
                 bind_group_layouts: &[
                     &texture_bind_group_layout,
                     &camera_bind_group_layout,
@@ -322,14 +353,13 @@ impl EngineState {
                 push_constant_ranges: &[],
             });
 
-        let render_pipeline = {
             let shader = wgpu::ShaderModuleDescriptor {
-                label: Some("Normal Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+                label: Some("Standard Shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("standard.wgsl").into()),
             };
             create_render_pipeline(
                 &device,
-                &render_pipeline_layout,
+                &layout,
                 config.format,
                 Some(texture::Texture::DEPTH_FORMAT),
                 &[model::ModelVertex::desc(), InstanceRaw::desc()],
@@ -345,7 +375,8 @@ impl EngineState {
             queue,
             config,
             is_surface_configured: false,
-            render_pipeline,
+            standard_pipeline,
+            light_pipeline,
             window,
             depth_texture,
             camera_buffer,
@@ -419,25 +450,56 @@ impl EngineState {
     // Instances
 
     pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
-        self.meshes
-            .get(handle.mesh.0)?
-            .instances
-            .get(handle.instance_index)
+        match handle.instance_type {
+            InstanceType::Standard => self
+                .meshes
+                .get(handle.mesh.0)?
+                .standard_instances
+                .get(handle.instance_index),
+            InstanceType::Light => self
+                .meshes
+                .get(handle.mesh.0)?
+                .light_instances
+                .get(handle.instance_index),
+        }
     }
 
     pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
-        if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
-            if let Some(instance) = mesh_data.instances.get_mut(handle.instance_index) {
-                instance.transform = transform;
+        match handle.instance_type {
+            InstanceType::Standard => {
+                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
+                    if let Some(instance) =
+                        mesh_data.standard_instances.get_mut(handle.instance_index)
+                    {
+                        instance.transform = transform;
 
-                let instance_raw = instance.to_raw();
-                let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
+                        let instance_raw = instance.to_raw();
+                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
 
-                self.queue.write_buffer(
-                    &mesh_data.instance_buffer,
-                    offset as wgpu::BufferAddress,
-                    bytemuck::cast_slice(&[instance_raw]),
-                );
+                        self.queue.write_buffer(
+                            &mesh_data.standard_instance_buffer,
+                            offset as wgpu::BufferAddress,
+                            bytemuck::cast_slice(&[instance_raw]),
+                        );
+                    }
+                }
+            }
+            InstanceType::Light => {
+                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
+                    if let Some(instance) = mesh_data.light_instances.get_mut(handle.instance_index)
+                    {
+                        instance.transform = transform;
+
+                        let instance_raw = instance.to_raw();
+                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
+
+                        self.queue.write_buffer(
+                            &mesh_data.light_instance_buffer,
+                            offset as wgpu::BufferAddress,
+                            bytemuck::cast_slice(&[instance_raw]),
+                        );
+                    }
+                }
             }
         }
     }
@@ -496,14 +558,12 @@ impl EngineState {
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
-                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
-
                     self.update_instance(
                         instance_handle,
                         Transform {
                             position,
                             rotation,
-                            scale,
+                            scale: entity.transform.scale,
                         },
                     );
                 }
@@ -524,14 +584,12 @@ impl EngineState {
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
-                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
-
                     self.update_instance(
                         instance_handle,
                         Transform {
                             position,
                             rotation,
-                            scale,
+                            scale: entity.transform.scale,
                         },
                     );
                 }
@@ -552,14 +610,12 @@ impl EngineState {
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
-                    let scale = self.get_instance(instance_handle).unwrap().transform.scale;
-
                     self.update_instance(
                         instance_handle,
                         Transform {
                             position,
                             rotation,
-                            scale,
+                            scale: entity.transform.scale,
                         },
                     );
                 }
@@ -641,6 +697,17 @@ impl EngineState {
                 for child in &entity.children {
                     self.rigid_body_trickle_down_update(child, new_position, new_rotation);
                 }
+
+                if let Some(instance_handle) = entity.instance_handle {
+                    self.update_instance(
+                        instance_handle,
+                        Transform {
+                            position: new_position,
+                            rotation: new_rotation,
+                            scale: entity.transform.scale,
+                        },
+                    );
+                }
             }
         }
     }
@@ -717,6 +784,15 @@ impl EngineState {
                             children,
                         )
                     }
+                    Entity::PointLight(point_light) => {
+                        let children = std::mem::take(&mut point_light.children);
+                        (
+                            point_light.transform.position,
+                            point_light.transform.rotation,
+                            point_light.instance_handle,
+                            children,
+                        )
+                    }
                     _ => continue,
                 }
             };
@@ -753,6 +829,9 @@ impl EngineState {
                 }
                 Entity::Empty(empty) => {
                     empty.children = children;
+                }
+                Entity::PointLight(point_light) => {
+                    point_light.children = children;
                 }
                 _ => unreachable!(),
             }
@@ -850,26 +929,39 @@ impl EngineState {
 
             // Meshes
 
-            rp.set_pipeline(&self.render_pipeline);
-            rp.set_bind_group(1, &self.camera_bind_group, &[]);
-            rp.set_bind_group(2, &self.light_bind_group, &[]);
-
             for mesh_data in &self.meshes {
-                let instance_count = mesh_data.instances.len() as u32;
-                if instance_count == 0 {
-                    continue; // Skip if no instances
-                }
-
                 let mesh = &mesh_data.mesh;
 
-                rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                let standarde_instance_count = mesh_data.standard_instances.len() as u32;
+                if standarde_instance_count != 0 {
+                    rp.set_pipeline(&self.standard_pipeline);
+                    rp.set_bind_group(1, &self.camera_bind_group, &[]);
+                    rp.set_bind_group(2, &self.light_bind_group, &[]);
 
-                rp.set_vertex_buffer(1, mesh_data.instance_buffer.slice(..));
+                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-                rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
+                    rp.set_vertex_buffer(1, mesh_data.standard_instance_buffer.slice(..));
 
-                rp.draw_indexed(0..mesh.index_count, 0, 0..instance_count);
+                    rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
+
+                    rp.draw_indexed(0..mesh.index_count, 0, 0..standarde_instance_count);
+                }
+
+                let light_instance_count = mesh_data.light_instances.len() as u32;
+                if light_instance_count != 0 {
+                    rp.set_pipeline(&self.light_pipeline);
+                    rp.set_bind_group(1, &self.camera_bind_group, &[]);
+
+                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+                    rp.set_vertex_buffer(1, mesh_data.light_instance_buffer.slice(..));
+
+                    rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
+
+                    rp.draw_indexed(0..mesh.index_count, 0, 0..light_instance_count);
+                }
             }
         }
 

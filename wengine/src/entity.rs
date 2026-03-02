@@ -16,7 +16,7 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
 );
 
 use crate::{
-    CameraUniform, Instance, InstanceHandle, LightHandle, LightUniform, Transform,
+    CameraUniform, Instance, InstanceHandle, InstanceType, LightHandle, LightUniform, Transform,
     model::{MeshData, MeshHandle},
     physics::{ColliderConfig, PhysicsWorld},
 };
@@ -119,6 +119,7 @@ pub struct EmptyBuilder {
 
 pub struct PointLightBuilder {
     pub tag: Option<String>,
+    pub mesh_handle: Option<MeshHandle>,
     pub transform: Transform,
     pub children: Vec<EntityBuilder>,
     pub color: [f32; 3],
@@ -415,6 +416,7 @@ impl PointLightBuilder {
     pub fn new(transform: Transform) -> Self {
         Self {
             tag: None,
+            mesh_handle: None,
             transform,
             children: vec![],
             color: [1.0, 1.0, 1.0],
@@ -439,6 +441,11 @@ impl PointLightBuilder {
 
     pub fn strength(mut self, strength: f32) -> Self {
         self.strength = strength;
+        self
+    }
+
+    pub fn mesh(mut self, mesh: MeshHandle) -> Self {
+        self.mesh_handle = Some(mesh);
         self
     }
 }
@@ -544,6 +551,7 @@ pub struct PointLight {
     pub children: Vec<Entity>,
     pub color: [f32; 3],
     pub strenght: f32,
+    pub instance_handle: Option<InstanceHandle>,
     pub light_handle: LightHandle,
 }
 
@@ -962,15 +970,16 @@ fn create_dynamic_rigidbody(
 
     if let Some(mesh_handle) = body.mesh_handle {
         let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
-        mesh_data.instances.push(Instance {
+        mesh_data.standard_instances.push(Instance {
             transform: body.transform,
         });
 
-        let instance_index = mesh_data.instances.len() - 1;
+        let instance_index = mesh_data.standard_instances.len() - 1;
 
         instance_handle = Some(InstanceHandle {
             mesh: mesh_handle,
             instance_index,
+            instance_type: InstanceType::Standard,
         })
     }
 
@@ -1069,15 +1078,16 @@ fn create_static_rigidbody(
 
     if let Some(mesh_handle) = body.mesh_handle {
         let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
-        mesh_data.instances.push(Instance {
+        mesh_data.standard_instances.push(Instance {
             transform: body.transform,
         });
 
-        let instance_index = mesh_data.instances.len() - 1;
+        let instance_index = mesh_data.standard_instances.len() - 1;
 
         instance_handle = Some(InstanceHandle {
             mesh: mesh_handle,
             instance_index,
+            instance_type: InstanceType::Standard,
         })
     }
 
@@ -1178,15 +1188,16 @@ fn create_kinematic_rigidbody(
 
     if let Some(mesh_handle) = body.mesh_handle {
         let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
-        mesh_data.instances.push(Instance {
+        mesh_data.standard_instances.push(Instance {
             transform: body.transform,
         });
 
-        let instance_index = mesh_data.instances.len() - 1;
+        let instance_index = mesh_data.standard_instances.len() - 1;
 
         instance_handle = Some(InstanceHandle {
             mesh: mesh_handle,
             instance_index,
+            instance_type: InstanceType::Standard,
         })
     }
 
@@ -1270,15 +1281,16 @@ fn create_mesh_instance(
     mesh_instance: MeshInstanceBuilder,
 ) -> Entity {
     let mesh_data = meshes.get_mut(mesh_instance.mesh_handle.0).unwrap();
-    mesh_data.instances.push(Instance {
+    mesh_data.standard_instances.push(Instance {
         transform: mesh_instance.transform,
     });
 
-    let instance_index = mesh_data.instances.len() - 1;
+    let instance_index = mesh_data.standard_instances.len() - 1;
 
     let instance_handle = InstanceHandle {
         mesh: mesh_instance.mesh_handle,
         instance_index,
+        instance_type: InstanceType::Standard,
     };
 
     let child_infos: Vec<_> = mesh_instance
@@ -1426,6 +1438,23 @@ fn create_point_light(
 
     queue.write_buffer(&light_buffer, 0, bytemuck::cast_slice(&lights));
 
+    let mut instance_handle: Option<InstanceHandle> = None;
+
+    if let Some(mesh_handle) = point_light.mesh_handle {
+        let mesh_data = meshes.get_mut(mesh_handle.0).unwrap();
+        mesh_data.light_instances.push(Instance {
+            transform: point_light.transform,
+        });
+
+        let instance_index = mesh_data.light_instances.len() - 1;
+
+        instance_handle = Some(InstanceHandle {
+            mesh: mesh_handle,
+            instance_index,
+            instance_type: InstanceType::Light,
+        })
+    }
+
     let child_infos: Vec<_> = point_light
         .children
         .into_iter()
@@ -1457,6 +1486,7 @@ fn create_point_light(
         children: child_infos,
         color: point_light.color,
         strenght: point_light.strength,
-        light_handle: light_handle,
+        light_handle,
+        instance_handle,
     })
 }

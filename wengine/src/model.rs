@@ -36,8 +36,10 @@ pub struct Material {
 pub struct MeshData {
     pub mesh: Mesh,
     pub material: Material,
-    pub instance_buffer: wgpu::Buffer,
-    pub instances: Vec<Instance>,
+    pub standard_instance_buffer: wgpu::Buffer,
+    pub standard_instances: Vec<Instance>,
+    pub light_instance_buffer: wgpu::Buffer,
+    pub light_instances: Vec<Instance>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -274,8 +276,15 @@ pub fn load_obj(
             index_count: mesh.indices.len() as u32,
         };
 
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Instance Buffer"),
+        let standard_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Standard instance Buffer"),
+            size: (std::mem::size_of::<InstanceRaw>() * MAX_INSTANCES) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let light_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Light instance Buffer"),
             size: (std::mem::size_of::<InstanceRaw>() * MAX_INSTANCES) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -290,8 +299,10 @@ pub fn load_obj(
         meshes.push(MeshData {
             mesh: mesh_struct,
             material,
-            instance_buffer,
-            instances: Vec::new(),
+            standard_instance_buffer,
+            standard_instances: Vec::new(),
+            light_instance_buffer,
+            light_instances: Vec::new(),
         });
 
         mesh_handle_list.push(MeshHandle(meshes.len() - 1));

@@ -21,6 +21,7 @@ impl Scene for Main {
         // World
 
         let cube_mesh = ctx.load_obj("../res/cube.obj").unwrap()[0];
+        let blue_cube_mesh = ctx.load_obj("../res/blue_cube.obj").unwrap()[0];
 
         ctx.spawn(
             EntityBuilder::static_body(Transform {
@@ -35,24 +36,24 @@ impl Scene for Main {
         );
 
         ctx.spawn(
-            EntityBuilder::mesh_instance(
-                cube_mesh,
-                Transform {
-                    position: vector![0.0, -25.0, 0.0],
-                    rotation: UnitQuaternion::from_axis_angle(
-                        &Vector3::y_axis(),
-                        0.0f32.to_radians(),
-                    )
-                    .into_inner(),
-                    scale: vector![1.0, 1.0, 1.0],
-                },
-            )
-            .add_child(EntityBuilder::point_light(Transform {
-                position: vector![0.0, 0.0, 0.0],
+            EntityBuilder::point_light(Transform {
+                position: vector![20.0, -25.5, 0.0],
                 rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
                     .into_inner(),
-                scale: vector![0.0, 0.0, 0.0],
-            })),
+                scale: vector![0.6, 0.6, 0.6],
+            })
+            .mesh(cube_mesh),
+        );
+
+        ctx.spawn(
+            EntityBuilder::point_light(Transform {
+                position: vector![-20.0, -25.5, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
+                    .into_inner(),
+                scale: vector![0.6, 0.6, 0.6],
+            })
+            .color([0.0, 0.0, 1.0])
+            .mesh(blue_cube_mesh),
         );
 
         // Player

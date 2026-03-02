@@ -1,6 +1,7 @@
 use wengine::{
     EngineEvent, Scene, SceneContext, Transform,
-    entity::{EntityBuilder, EntityHandle, EntityRef},
+    entity::{EmptyBuilder, EntityBuilder, EntityHandle, EntityRef},
+    model::MeshHandle,
 };
 
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
@@ -133,10 +134,26 @@ impl Player {
     }
 }
 
+fn create_mesh_entity(meshes: &[MeshHandle], parent_transform: Transform) -> EmptyBuilder {
+    let mut builder = EntityBuilder::empty(parent_transform);
+
+    for &mesh in meshes {
+        builder = builder.add_child(EntityBuilder::mesh_instance(
+            mesh,
+            Transform {
+                position: vector![0.0, 0.0, 0.0],
+                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
+                    .into_inner(),
+                scale: vector![1.0, 1.0, 1.0],
+            },
+        ));
+    }
+
+    builder
+}
+
 impl Scene for Player {
     fn on_init(&mut self, ctx: &mut SceneContext) {
-        // Player
-
         let player_handle = ctx.spawn(
             EntityBuilder::dynamic_body(Transform {
                 position: vector![0.0, 0.0, 0.0],
@@ -145,7 +162,7 @@ impl Scene for Player {
                 scale: vector![1.0, 1.0, 1.0],
             })
             .add_child(
-                EntityBuilder::camera(Transform {
+                EntityBuilder::empty(Transform {
                     position: vector![0.0, 1.8, 0.0],
                     rotation: UnitQuaternion::from_axis_angle(
                         &Vector3::y_axis(),
@@ -154,20 +171,18 @@ impl Scene for Player {
                     .into_inner(),
                     scale: vector![1.0, 1.0, 1.0],
                 })
-                .fov(80.0),
-            )
-            .add_child(
-                EntityBuilder::point_light(Transform {
-                    position: vector![0.0, 0.0, 0.0],
-                    rotation: UnitQuaternion::from_axis_angle(
-                        &Vector3::y_axis(),
-                        0.0f32.to_radians(),
-                    )
-                    .into_inner(),
-                    scale: vector![0.0, 0.0, 0.0],
-                })
-                .strength(0.2)
-                .color([0.0, 1.0, 0.0]),
+                .add_child(
+                    EntityBuilder::camera(Transform {
+                        position: vector![0.0, 0.0, 0.0],
+                        rotation: UnitQuaternion::from_axis_angle(
+                            &Vector3::y_axis(),
+                            0.0f32.to_radians(),
+                        )
+                        .into_inner(),
+                        scale: vector![1.0, 1.0, 1.0],
+                    })
+                    .fov(80.0),
+                ),
             )
             .collider_capsule(0.9, 0.5)
             .tag("player_body")
@@ -240,10 +255,10 @@ impl Scene for Player {
                 .unwrap();
         }
 
-        // Update camera rotation
+        // Update view rotation
 
-        if let EntityRef::Camera(camera) = &mut player.get_child(0).unwrap() {
-            camera.entity.transform.rotation = self.camera_controller.get_rotation().into_inner()
+        if let EntityRef::Empty(view) = &mut player.get_child(0).unwrap() {
+            view.entity.transform.rotation = self.camera_controller.get_rotation().into_inner()
         }
     }
 
@@ -268,6 +283,10 @@ impl Scene for Player {
                     }
                     KeyCode::Space => {
                         self.player_controller.is_jump_pressed = pressed;
+                    }
+                    KeyCode::Escape => {
+                        ctx.release_cursor();
+                        self.cursor_grabbed = false;
                     }
                     _ => {}
                 },
