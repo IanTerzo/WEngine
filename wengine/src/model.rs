@@ -203,7 +203,7 @@ pub fn load_obj(
             });
         }
     } else {
-        let diffuse_bytes = include_bytes!("error.png");
+        let diffuse_bytes = include_bytes!("../resources/error.png");
         let diffuse_texture =
             texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "error.png").unwrap();
 

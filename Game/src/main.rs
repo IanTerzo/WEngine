@@ -20,8 +20,8 @@ impl Scene for Main {
     fn on_init(&mut self, ctx: &mut SceneContext) {
         // World
 
-        let cube_mesh = ctx.load_obj("../res/cube.obj").unwrap()[0];
-        let blue_cube_mesh = ctx.load_obj("../res/blue_cube.obj").unwrap()[0];
+        let cube_mesh = ctx.load_obj("assets/cube.obj").unwrap()[0];
+        let blue_cube_mesh = ctx.load_obj("assets/blue_cube.obj").unwrap()[0];
 
         ctx.spawn(
             EntityBuilder::static_body(Transform {

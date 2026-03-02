@@ -20,7 +20,7 @@ impl Cube {
 
 impl Scene for Cube {
     fn on_init(&mut self, ctx: &mut SceneContext) {
-        let cube_mesh = ctx.load_obj("../res/cube.obj").unwrap()[0];
+        let cube_mesh = ctx.load_obj("assets/cube.obj").unwrap()[0];
 
         self.cube_handle = Some(
             ctx.spawn(
