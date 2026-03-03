@@ -41,6 +41,37 @@ pub struct Transform {
 }
 
 impl Transform {
+    pub fn zero() -> Self {
+        Transform {
+            position: Vector3::new(0.0, 0.0, 0.0),
+            rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0), // identity quaternion
+            scale: Vector3::new(1.0, 1.0, 1.0),            // identity scale
+        }
+    }
+
+    pub fn transform(&self, other: &Transform) -> Transform {
+        let rotated_offset =
+            UnitQuaternion::from_quaternion(self.rotation).transform_vector(&other.position);
+
+        let new_position = self.position + rotated_offset;
+
+        let new_rotation = (UnitQuaternion::from_quaternion(self.rotation)
+            * UnitQuaternion::from_quaternion(other.rotation))
+        .into_inner();
+
+        let new_scale = Vector3::new(
+            self.scale.x * other.scale.x,
+            self.scale.y * other.scale.y,
+            self.scale.z * other.scale.z,
+        );
+
+        Transform {
+            position: new_position,
+            rotation: new_rotation,
+            scale: new_scale,
+        }
+    }
+
     pub fn to_matrix(&self) -> Matrix4<f32> {
         let translation = Translation3::from(self.position).to_homogeneous();
         // make sure the quaternion is treated as a rotation
@@ -449,21 +480,6 @@ impl EngineState {
 
     // Instances
 
-    pub fn get_instance(&self, handle: InstanceHandle) -> Option<&Instance> {
-        match handle.instance_type {
-            InstanceType::Standard => self
-                .meshes
-                .get(handle.mesh.0)?
-                .standard_instances
-                .get(handle.instance_index),
-            InstanceType::Light => self
-                .meshes
-                .get(handle.mesh.0)?
-                .light_instances
-                .get(handle.instance_index),
-        }
-    }
-
     pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
         match handle.instance_type {
             InstanceType::Standard => {
@@ -533,12 +549,7 @@ impl EngineState {
         self.window.set_cursor_visible(true);
     }
 
-    pub fn rigid_body_trickle_down_update(
-        &mut self,
-        entity_ref: &Entity,
-        parent_position: Vector3<f32>,
-        parent_rotation: Quaternion<f32>,
-    ) {
+    pub fn update_entity(&mut self, entity_ref: &Entity, parent_transform: Transform) {
         // We want to update all non rigidbody children with the physics of the parent rigidbody.
         match &entity_ref {
             Entity::DynamicBody(entity) => {
@@ -554,7 +565,14 @@ impl EngineState {
 
                 // We apply the physics of the parent rigidbody on all children
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, position, rotation);
+                    self.update_entity(
+                        child,
+                        Transform {
+                            position,
+                            rotation,
+                            scale: entity.transform.scale,
+                        },
+                    );
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
@@ -580,7 +598,14 @@ impl EngineState {
                 let rotation = iso.rotation.into_inner();
 
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, position, rotation);
+                    self.update_entity(
+                        child,
+                        Transform {
+                            position,
+                            rotation,
+                            scale: entity.transform.scale,
+                        },
+                    );
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
@@ -606,7 +631,14 @@ impl EngineState {
                 let rotation = iso.rotation.into_inner();
 
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, position, rotation);
+                    self.update_entity(
+                        child,
+                        Transform {
+                            position,
+                            rotation,
+                            scale: entity.transform.scale,
+                        },
+                    );
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
@@ -621,37 +653,23 @@ impl EngineState {
                 }
             }
             Entity::MeshInstance(entity) => {
-                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
-                    .transform_vector(&entity.transform.position);
-
-                let new_position = parent_position + rotated_offset;
-
-                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
-                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
-                .into_inner();
+                let updated_transform = parent_transform.transform(&entity.transform);
 
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                    self.update_entity(child, updated_transform);
                 }
 
-                self.update_instance(
-                    entity.instance_handle,
-                    Transform {
-                        position: new_position,
-                        rotation: new_rotation,
-                        scale: entity.transform.scale,
-                    },
-                );
+                self.update_instance(entity.instance_handle, updated_transform);
             }
             Entity::Camera(entity) => {
-                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
+                let rotated_offset = UnitQuaternion::from_quaternion(parent_transform.rotation)
                     .transform_vector(&entity.transform.position);
 
-                let camera_position = parent_position + rotated_offset;
+                let camera_position = parent_transform.position + rotated_offset;
 
                 let iso = Isometry::from_parts(
                     Translation3::from(camera_position), // Use the rotated position
-                    UnitQuaternion::from_quaternion(parent_rotation)
+                    UnitQuaternion::from_quaternion(parent_transform.rotation)
                         * UnitQuaternion::from_quaternion(entity.transform.rotation),
                 );
                 let view = iso.inverse().to_homogeneous();
@@ -667,46 +685,23 @@ impl EngineState {
                 );
             }
             Entity::Empty(entity) => {
-                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
-                    .transform_vector(&entity.transform.position);
-
-                let new_position = parent_position + rotated_offset;
-
-                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
-                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
-                .into_inner();
-
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                    self.update_entity(child, parent_transform.transform(&entity.transform));
                 }
             }
             Entity::PointLight(entity) => {
-                let rotated_offset = UnitQuaternion::from_quaternion(parent_rotation)
-                    .transform_vector(&entity.transform.position);
+                let updated_transform = parent_transform.transform(&entity.transform);
 
-                let new_position = parent_position + rotated_offset;
-
-                let new_rotation = (UnitQuaternion::from_quaternion(parent_rotation)
-                    * UnitQuaternion::from_quaternion(entity.transform.rotation))
-                .into_inner();
-
-                self.lights[entity.light_handle.0].position = new_position.into();
+                self.lights[entity.light_handle.0].position = updated_transform.position.into();
                 self.lights[entity.light_handle.0].color = entity.color;
                 self.lights[entity.light_handle.0].strength = entity.strenght;
 
                 for child in &entity.children {
-                    self.rigid_body_trickle_down_update(child, new_position, new_rotation);
+                    self.update_entity(child, updated_transform);
                 }
 
                 if let Some(instance_handle) = entity.instance_handle {
-                    self.update_instance(
-                        instance_handle,
-                        Transform {
-                            position: new_position,
-                            rotation: new_rotation,
-                            scale: entity.transform.scale,
-                        },
-                    );
+                    self.update_instance(instance_handle, updated_transform);
                 }
             }
         }
@@ -718,126 +713,15 @@ impl EngineState {
         Vec<(EntityHandle, EntityHandle)>,
         Vec<(EntityHandle, EntityHandle)>,
     ) {
+        // Step the physics world
         self.physics_world.step();
 
-        // This system is weird, it should be reworked.
-
-        for i in 0..self.entities.len() {
-            let (position, rotation, instance_handle, children) = {
-                let entity_info = &mut self.entities[i];
-
-                match entity_info {
-                    Entity::DynamicBody(rigid_body) => {
-                        let handle = rigid_body.rigid_body_handle;
-                        let rigid_body_calc =
-                            self.physics_world.rigid_body_set.get(handle).unwrap();
-
-                        let iso = rigid_body_calc.position();
-                        let position: Vector3<f32> = iso.translation.vector;
-                        let rotation = iso.rotation.into_inner();
-
-                        let children = std::mem::take(&mut rigid_body.children);
-
-                        (position, rotation, rigid_body.instance_handle, children)
-                    }
-                    Entity::StaticBody(rigid_body) => {
-                        let handle = rigid_body.rigid_body_handle;
-                        let rigid_body_calc =
-                            self.physics_world.rigid_body_set.get(handle).unwrap();
-
-                        let iso = rigid_body_calc.position();
-                        let position: Vector3<f32> = iso.translation.vector;
-                        let rotation = iso.rotation.into_inner();
-
-                        let children = std::mem::take(&mut rigid_body.children);
-
-                        (position, rotation, rigid_body.instance_handle, children)
-                    }
-                    Entity::KinematicBody(rigid_body) => {
-                        let handle = rigid_body.rigid_body_handle;
-                        let rigid_body_calc =
-                            self.physics_world.rigid_body_set.get(handle).unwrap();
-
-                        let iso = rigid_body_calc.position();
-                        let position: Vector3<f32> = iso.translation.vector;
-                        let rotation = iso.rotation.into_inner();
-
-                        let children = std::mem::take(&mut rigid_body.children);
-
-                        (position, rotation, rigid_body.instance_handle, children)
-                    }
-                    Entity::MeshInstance(mesh_instance) => {
-                        let children = std::mem::take(&mut mesh_instance.children);
-                        (
-                            mesh_instance.transform.position,
-                            mesh_instance.transform.rotation,
-                            Some(mesh_instance.instance_handle),
-                            children,
-                        )
-                    }
-                    Entity::Empty(empty) => {
-                        let children = std::mem::take(&mut empty.children);
-                        (
-                            empty.transform.position,
-                            empty.transform.rotation,
-                            None,
-                            children,
-                        )
-                    }
-                    Entity::PointLight(point_light) => {
-                        let children = std::mem::take(&mut point_light.children);
-                        (
-                            point_light.transform.position,
-                            point_light.transform.rotation,
-                            point_light.instance_handle,
-                            children,
-                        )
-                    }
-                    _ => continue,
-                }
-            };
-
-            for child in &children {
-                self.rigid_body_trickle_down_update(child, position, rotation);
-            }
-
-            if let Some(handle) = instance_handle {
-                let scale = self.get_instance(handle).unwrap().transform.scale;
-
-                self.update_instance(
-                    handle,
-                    Transform {
-                        position,
-                        rotation,
-                        scale,
-                    },
-                );
-            }
-
-            match &mut self.entities[i] {
-                Entity::DynamicBody(rigid_body) => {
-                    rigid_body.children = children;
-                }
-                Entity::StaticBody(rigid_body) => {
-                    rigid_body.children = children;
-                }
-                Entity::KinematicBody(rigid_body) => {
-                    rigid_body.children = children;
-                }
-                Entity::MeshInstance(mesh_instance) => {
-                    mesh_instance.children = children;
-                }
-                Entity::Empty(empty) => {
-                    empty.children = children;
-                }
-                Entity::PointLight(point_light) => {
-                    point_light.children = children;
-                }
-                _ => unreachable!(),
-            }
+        // Update entities
+        let entities = std::mem::take(&mut self.entities);
+        for entity in &entities {
+            self.update_entity(entity, Transform::zero());
         }
-
-        // Lights
+        self.entities = entities;
 
         self.queue
             .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.lights));
@@ -887,6 +771,7 @@ impl EngineState {
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.window.request_redraw();
+
         if !self.is_surface_configured {
             return Ok(());
         }
@@ -895,6 +780,7 @@ impl EngineState {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -1005,10 +891,6 @@ impl<'a> SceneContext<'a> {
             scene: Box::new(scene),
             is_active: false,
         });
-    }
-
-    pub fn get_scene() {
-        // Allows you to set the transform (scale, position, rotation)
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
