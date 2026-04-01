@@ -1,444 +1,104 @@
 use crate::{
+    camera::CameraState,
     entity::{
-        CameraRef, DynamicBodyRef, EmptyRef, Entity, EntityBuilder, EntityHandle, EntityRef,
-        KinematicBodyRef, MeshInstanceRef, OPENGL_TO_WGPU_MATRIX, PointLightRef, StaticBodyRef,
-        get_entity_from_handle, spawn,
+        Entity, EntityHandle,
+        builder::EntityBuilder,
+        get_entity_from_handle,
+        refs::{
+            CameraRef, DynamicBodyRef, EmptyRef, EntityRef, KinematicBodyRef, MeshInstanceRef,
+            PointLightRef, StaticBodyRef,
+        },
+        spawn::spawn,
     },
-    model::{InstanceRaw, MeshData, MeshHandle, load_obj},
+    instance::{InstanceHandle, InstanceRaw, InstanceType},
+    lightning::LightingState,
+    mesh::{MeshData, MeshHandle, load_obj},
     physics::PhysicsWorld,
+    renderer::{OPENGL_TO_WGPU_MATRIX, Renderer},
+    transform::Transform,
 };
-use nalgebra::{
-    self, Isometry, Matrix4, Perspective3, Quaternion, Translation3, UnitQuaternion, Vector3,
-};
+use nalgebra::{self, Isometry, Perspective3, Translation3, UnitQuaternion, Vector3};
 use rapier3d::prelude::ColliderHandle;
 use std::{
     collections::{HashMap, HashSet},
-    hash::Hash,
     sync::Arc,
 };
-use wgpu::util::DeviceExt;
-use winit::{
-    application::ApplicationHandler,
-    event::*,
-    event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::PhysicalKey,
-    window::Window,
-};
+use winit::window::Window;
 
+pub mod app;
+pub mod camera;
 pub mod entity;
-pub mod model;
+pub mod instance;
+pub mod lightning;
+pub mod mesh;
 pub mod physics;
+pub mod renderer;
+pub mod scene;
 pub mod texture;
-
-const MAX_INSTANCES: usize = 100;
-const MAX_LIGHTS: usize = 100;
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Transform {
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
-    pub scale: Vector3<f32>,
-}
-
-impl Transform {
-    pub fn zero() -> Self {
-        Transform {
-            position: Vector3::new(0.0, 0.0, 0.0),
-            rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0), // identity quaternion
-            scale: Vector3::new(1.0, 1.0, 1.0),            // identity scale
-        }
-    }
-
-    pub fn transform(&self, other: &Transform) -> Transform {
-        let rotated_offset =
-            UnitQuaternion::from_quaternion(self.rotation).transform_vector(&other.position);
-
-        let new_position = self.position + rotated_offset;
-
-        let new_rotation = (UnitQuaternion::from_quaternion(self.rotation)
-            * UnitQuaternion::from_quaternion(other.rotation))
-        .into_inner();
-
-        let new_scale = Vector3::new(
-            self.scale.x * other.scale.x,
-            self.scale.y * other.scale.y,
-            self.scale.z * other.scale.z,
-        );
-
-        Transform {
-            position: new_position,
-            rotation: new_rotation,
-            scale: new_scale,
-        }
-    }
-
-    pub fn to_matrix(&self) -> Matrix4<f32> {
-        let translation = Translation3::from(self.position).to_homogeneous();
-        // make sure the quaternion is treated as a rotation
-        let rotation = UnitQuaternion::from_quaternion(self.rotation).to_homogeneous();
-        let scale = Matrix4::new_nonuniform_scaling(&self.scale);
-
-        translation * rotation * scale
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InstanceHandle {
-    pub mesh: MeshHandle,
-    pub instance_index: usize,
-    pub instance_type: InstanceType,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InstanceType {
-    Standard,
-    Light,
-}
-
-pub struct Instance {
-    pub transform: Transform,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CameraUniform {
-    view_position: [f32; 4],
-    view_proj: [[f32; 4]; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct LightUniform {
-    position: [f32; 3],
-    _padding: f32,
-    color: [f32; 3],
-    _padding2: f32,
-    strength: f32,
-    _padding3: [f32; 3],
-}
-
-#[derive(Clone, Debug)]
-pub struct LightHandle(pub usize);
+pub mod transform;
 
 pub struct EngineState {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    is_surface_configured: bool,
-    standard_pipeline: wgpu::RenderPipeline,
-    light_pipeline: wgpu::RenderPipeline,
-    pub window: Arc<Window>,
-    depth_texture: texture::Texture,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
-    meshes: Vec<MeshData>,
-    camera_uniform: CameraUniform,
+    pub renderer: Renderer,
+    pub camera: CameraState,
+    pub lighting: LightingState,
     pub physics_world: PhysicsWorld,
+    window: Arc<Window>,
+    meshes: Vec<MeshData>,
     entities: Vec<Entity>,
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
     cursor_grabbed: bool,
-    lights: Vec<LightUniform>,
-    light_buffer: wgpu::Buffer,
-    light_bind_group: wgpu::BindGroup,
-}
-
-fn create_render_pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    color_format: wgpu::TextureFormat,
-    depth_format: Option<wgpu::TextureFormat>,
-    vertex_layouts: &[wgpu::VertexBufferLayout],
-    shader: wgpu::ShaderModuleDescriptor,
-) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(shader);
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: vertex_layouts,
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend: Some(wgpu::BlendState {
-                    alpha: wgpu::BlendComponent::REPLACE,
-                    color: wgpu::BlendComponent::REPLACE,
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-            polygon_mode: wgpu::PolygonMode::Fill,
-            // Requires Features::DEPTH_CLIP_CONTROL
-            unclipped_depth: false,
-            // Requires Features::CONSERVATIVE_RASTERIZATION
-            conservative: false,
-        },
-        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
-            format,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview: None,
-        cache: None,
-    })
 }
 
 impl EngineState {
     pub async fn new(window: Arc<Window>) -> anyhow::Result<EngineState> {
-        // Creates the wgpu instance and the SurfaceConfiguration
+        let renderer = Renderer::new(window.clone()).await?;
 
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window.clone())?;
+        let camera = CameraState::new(&renderer.device, &renderer.camera_bind_group_layout);
 
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-
-        let caps = surface.get_capabilities(&adapter);
-        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap();
-
-        let size = window.inner_size();
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width,
-            height: size.height,
-            present_mode: caps.present_modes[0],
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-
-        // Get device and command queue
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            })
-            .await?;
-
-        // Creates necessary buffer and bind group for the camera
-
-        let camera_uniform = CameraUniform {
-            view_position: [0.0; 4],
-            view_proj: Matrix4::identity().into(),
-        };
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::bytes_of(&camera_uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: None,
-            });
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-            label: None,
-        });
-
-        // Create the texture bind group layout
-
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-
-        // Create depth texture
-
-        let depth_texture =
-            texture::Texture::create_depth_texture(&device, &config, "depth-texture");
-
-        // Lighting
-
-        let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Light Buffer"),
-            size: (std::mem::size_of::<LightUniform>() * MAX_LIGHTS) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let light_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: None,
-            });
-
-        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &light_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: light_buffer.as_entire_binding(),
-            }],
-            label: None,
-        });
-
-        // Lights pipeline
-
-        let light_pipeline = {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Light Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-            let shader = wgpu::ShaderModuleDescriptor {
-                label: Some("Light Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/light.wgsl").into()),
-            };
-            create_render_pipeline(
-                &device,
-                &layout,
-                config.format,
-                Some(texture::Texture::DEPTH_FORMAT),
-                &[model::ModelVertex::desc(), InstanceRaw::desc()],
-                shader,
-            )
-        };
-
-        // Standard pipeline
-
-        let standard_pipeline = {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Standard Pipeline Layout"),
-                bind_group_layouts: &[
-                    &texture_bind_group_layout,
-                    &camera_bind_group_layout,
-                    &light_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-
-            let shader = wgpu::ShaderModuleDescriptor {
-                label: Some("Standard Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/standard.wgsl").into()),
-            };
-            create_render_pipeline(
-                &device,
-                &layout,
-                config.format,
-                Some(texture::Texture::DEPTH_FORMAT),
-                &[model::ModelVertex::desc(), InstanceRaw::desc()],
-                shader,
-            )
-        };
+        let lighting = LightingState::new(&renderer.device, &renderer.light_bind_group_layout);
 
         let physics_world = PhysicsWorld::new();
 
         Ok(Self {
-            surface,
-            device,
-            queue,
-            config,
-            is_surface_configured: false,
-            standard_pipeline,
-            light_pipeline,
-            window,
-            depth_texture,
-            camera_buffer,
-            camera_bind_group,
-            texture_bind_group_layout,
-            meshes: vec![],
-            camera_uniform,
+            renderer,
+            camera,
+            lighting,
             physics_world,
+            window,
+            meshes: vec![],
             entities: vec![],
             collider_entity_pairs: HashMap::new(),
             active_collisions: HashSet::new(),
             cursor_grabbed: false,
-            lights: vec![],
-            light_buffer,
-            light_bind_group,
         })
     }
 
-    // Loading models
-
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
         load_obj(
-            &self.device,
-            &self.queue,
-            &self.texture_bind_group_layout,
+            &self.renderer.device,
+            &self.renderer.queue,
+            &self.renderer.texture_bind_group_layout,
             path,
             &mut self.meshes,
         )
     }
 
-    // Entity management
+    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
+        spawn(
+            &mut self.entities,
+            &mut self.meshes,
+            &mut self.collider_entity_pairs,
+            &mut self.physics_world,
+            &self.renderer.queue,
+            &mut self.camera.uniform,
+            &self.camera.buffer,
+            &self.renderer.config,
+            &mut self.lighting.lights,
+            &self.lighting.buffer,
+            entity,
+        )
+    }
 
     pub fn get_entity<'a>(
         &'a mut self,
@@ -462,77 +122,6 @@ impl EngineState {
         }
     }
 
-    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
-        spawn(
-            &mut self.entities,
-            &mut self.meshes,
-            &mut self.collider_entity_pairs,
-            &mut self.physics_world,
-            &self.queue,
-            &mut self.camera_uniform,
-            &self.camera_buffer,
-            &self.config,
-            &mut self.lights,
-            &self.light_buffer,
-            entity,
-        )
-    }
-
-    // Instances
-
-    pub fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
-        match handle.instance_type {
-            InstanceType::Standard => {
-                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
-                    if let Some(instance) =
-                        mesh_data.standard_instances.get_mut(handle.instance_index)
-                    {
-                        instance.transform = transform;
-
-                        let instance_raw = instance.to_raw();
-                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
-
-                        self.queue.write_buffer(
-                            &mesh_data.standard_instance_buffer,
-                            offset as wgpu::BufferAddress,
-                            bytemuck::cast_slice(&[instance_raw]),
-                        );
-                    }
-                }
-            }
-            InstanceType::Light => {
-                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
-                    if let Some(instance) = mesh_data.light_instances.get_mut(handle.instance_index)
-                    {
-                        instance.transform = transform;
-
-                        let instance_raw = instance.to_raw();
-                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
-
-                        self.queue.write_buffer(
-                            &mesh_data.light_instance_buffer,
-                            offset as wgpu::BufferAddress,
-                            bytemuck::cast_slice(&[instance_raw]),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Events
-
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.config.width = width;
-            self.config.height = height;
-            self.depth_texture =
-                texture::Texture::create_depth_texture(&self.device, &self.config, "depth");
-            self.surface.configure(&self.device, &self.config);
-            self.is_surface_configured = true;
-        }
-    }
-
     pub fn grab_cursor(&mut self) {
         self.cursor_grabbed = true;
         let _ = self
@@ -549,7 +138,47 @@ impl EngineState {
         self.window.set_cursor_visible(true);
     }
 
-    pub fn update_entity(&mut self, entity_ref: &Entity, parent_transform: Transform) {
+    fn update_instance(&mut self, handle: InstanceHandle, transform: Transform) {
+        match handle.instance_type {
+            InstanceType::Standard => {
+                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
+                    if let Some(instance) =
+                        mesh_data.standard_instances.get_mut(handle.instance_index)
+                    {
+                        instance.transform = transform;
+
+                        let instance_raw = instance.to_raw();
+                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
+
+                        self.renderer.queue.write_buffer(
+                            &mesh_data.standard_instance_buffer,
+                            offset as wgpu::BufferAddress,
+                            bytemuck::cast_slice(&[instance_raw]),
+                        );
+                    }
+                }
+            }
+            InstanceType::Light => {
+                if let Some(mesh_data) = self.meshes.get_mut(handle.mesh.0) {
+                    if let Some(instance) = mesh_data.light_instances.get_mut(handle.instance_index)
+                    {
+                        instance.transform = transform;
+
+                        let instance_raw = instance.to_raw();
+                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
+
+                        self.renderer.queue.write_buffer(
+                            &mesh_data.light_instance_buffer,
+                            offset as wgpu::BufferAddress,
+                            bytemuck::cast_slice(&[instance_raw]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn update_entity(&mut self, entity_ref: &Entity, parent_transform: Transform) {
         // We want to update all non rigidbody children with the physics of the parent rigidbody.
         match &entity_ref {
             Entity::DynamicBody(entity) => {
@@ -673,16 +302,12 @@ impl EngineState {
                         * UnitQuaternion::from_quaternion(entity.transform.rotation),
                 );
                 let view = iso.inverse().to_homogeneous();
-                let aspect = self.config.width as f32 / self.config.height as f32;
+                let aspect = self.renderer.config.width as f32 / self.renderer.config.height as f32;
                 let proj =
                     Perspective3::new(aspect, entity.fov.to_radians(), entity.near, entity.far)
                         .to_homogeneous();
-                self.camera_uniform.view_proj = (OPENGL_TO_WGPU_MATRIX * proj * view).into();
-                self.queue.write_buffer(
-                    &self.camera_buffer,
-                    0,
-                    bytemuck::cast_slice(&[self.camera_uniform]),
-                );
+                self.camera
+                    .update_view_proj(&self.renderer.queue, OPENGL_TO_WGPU_MATRIX * proj * view);
             }
             Entity::Empty(entity) => {
                 for child in &entity.children {
@@ -692,9 +317,10 @@ impl EngineState {
             Entity::PointLight(entity) => {
                 let updated_transform = parent_transform.transform(&entity.transform);
 
-                self.lights[entity.light_handle.0].position = updated_transform.position.into();
-                self.lights[entity.light_handle.0].color = entity.color;
-                self.lights[entity.light_handle.0].strength = entity.strenght;
+                self.lighting.lights[entity.light_handle.0].position =
+                    updated_transform.position.into();
+                self.lighting.lights[entity.light_handle.0].color = entity.color;
+                self.lighting.lights[entity.light_handle.0].strength = entity.strenght;
 
                 for child in &entity.children {
                     self.update_entity(child, updated_transform);
@@ -707,27 +333,12 @@ impl EngineState {
         }
     }
 
-    pub fn update(
+    fn collect_collisions(
         &mut self,
     ) -> (
         Vec<(EntityHandle, EntityHandle)>,
         Vec<(EntityHandle, EntityHandle)>,
     ) {
-        // Step the physics world
-        self.physics_world.step();
-
-        // Update entities
-        let entities = std::mem::take(&mut self.entities);
-        for entity in &entities {
-            self.update_entity(entity, Transform::zero());
-        }
-        self.entities = entities;
-
-        self.queue
-            .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.lights));
-
-        // Collisions
-
         let current_collisions: HashSet<(EntityHandle, EntityHandle)> = self
             .physics_world
             .narrow_phase
@@ -769,467 +380,37 @@ impl EngineState {
         (new_collisions, removed_collisions)
     }
 
+    pub fn update(
+        &mut self,
+    ) -> (
+        Vec<(EntityHandle, EntityHandle)>,
+        Vec<(EntityHandle, EntityHandle)>,
+    ) {
+        // Step the physics world
+
+        self.physics_world.step();
+
+        // Update entities
+
+        let entities = std::mem::take(&mut self.entities);
+        for entity in &entities {
+            self.update_entity(entity, Transform::zero());
+        }
+        self.entities = entities;
+
+        self.lighting.flush(&self.renderer.queue);
+
+        // Collisions
+
+        self.collect_collisions()
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.window.request_redraw();
-
-        if !self.is_surface_configured {
-            return Ok(());
-        }
-
-        let frame = self.surface.get_current_texture()?;
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        {
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-
-            // Meshes
-
-            for mesh_data in &self.meshes {
-                let mesh = &mesh_data.mesh;
-
-                let standarde_instance_count = mesh_data.standard_instances.len() as u32;
-                if standarde_instance_count != 0 {
-                    rp.set_pipeline(&self.standard_pipeline);
-                    rp.set_bind_group(1, &self.camera_bind_group, &[]);
-                    rp.set_bind_group(2, &self.light_bind_group, &[]);
-
-                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-                    rp.set_vertex_buffer(1, mesh_data.standard_instance_buffer.slice(..));
-
-                    rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
-
-                    rp.draw_indexed(0..mesh.index_count, 0, 0..standarde_instance_count);
-                }
-
-                let light_instance_count = mesh_data.light_instances.len() as u32;
-                if light_instance_count != 0 {
-                    rp.set_pipeline(&self.light_pipeline);
-                    rp.set_bind_group(1, &self.camera_bind_group, &[]);
-
-                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-                    rp.set_vertex_buffer(1, mesh_data.light_instance_buffer.slice(..));
-
-                    rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
-
-                    rp.draw_indexed(0..mesh.index_count, 0, 0..light_instance_count);
-                }
-            }
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-
-        Ok(())
-    }
-}
-
-pub struct SceneInstance {
-    pub scene: Box<dyn Scene>,
-    pub is_active: bool,
-}
-
-pub struct SceneContext<'a> {
-    core: &'a mut EngineState,
-    scenes: &'a mut Vec<SceneInstance>,
-}
-
-// User facing abstraction of EngineState
-
-impl<'a> SceneContext<'a> {
-    pub(crate) fn new(state: &'a mut EngineState, scenes: &'a mut Vec<SceneInstance>) -> Self {
-        Self {
-            core: state,
-            scenes,
-        }
-    }
-
-    pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<EntityRef<'_>> {
-        self.core.get_entity(entity_handle)
-    }
-
-    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
-        self.core.spawn(entity)
-    }
-
-    pub fn spawn_scene(&mut self, scene: impl Scene + 'static) {
-        self.scenes.push(SceneInstance {
-            scene: Box::new(scene),
-            is_active: false,
-        });
-    }
-
-    pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
-        self.core.load_obj(path)
-    }
-
-    pub fn grab_cursor(&mut self) {
-        self.core.grab_cursor();
-    }
-
-    pub fn release_cursor(&mut self) {
-        self.core.release_cursor();
-    }
-}
-
-pub enum EngineEvent {
-    Key {
-        physical_key: PhysicalKey,
-        pressed: bool,
-    },
-    MouseMotion {
-        delta_x: f64,
-        delta_y: f64,
-    },
-    MouseButton {
-        button: winit::event::MouseButton,
-        pressed: bool,
-    },
-    CollisionEnter {
-        entity: EntityHandle,
-        other: EntityHandle,
-    },
-    CollisionExit {
-        entity: EntityHandle,
-        other: EntityHandle,
-    },
-}
-
-struct App {
-    state: Option<EngineState>,
-    scenes: Vec<SceneInstance>,
-    last_frame_time: std::time::Instant,
-    physics_update: f32,
-    clock: f32,
-    width: u32,
-    height: u32,
-    title: String,
-    fullscreen: bool,
-    resizable: bool,
-}
-
-// Based on the window "event" or action we run the correct function in game.
-
-impl ApplicationHandler<EngineState> for App {
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        let state: &mut EngineState = match &mut self.state {
-            Some(canvas) => canvas,
-            None => return,
-        };
-
-        match event {
-            WindowEvent::RedrawRequested => {
-                let current_time = std::time::Instant::now();
-                let delta = (current_time - self.last_frame_time).as_secs_f32();
-                self.last_frame_time = current_time;
-                self.clock += delta;
-
-                // We run the physics at a set time but we render at the monitors FPS.
-                if self.clock >= self.physics_update {
-                    let (new_collisions, removed_collision) = state.update();
-
-                    {
-                        for i in 0..self.scenes.len() {
-                            let mut scene = self.scenes.remove(i);
-
-                            if !scene.is_active {
-                                let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                                scene.scene.on_init(&mut scene_context);
-
-                                scene.is_active = true;
-                            }
-
-                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            scene.scene.on_update(delta, &mut scene_context);
-
-                            self.scenes.insert(i, scene);
-                        }
-                    }
-
-                    for pair in new_collisions {
-                        for i in 0..self.scenes.len() {
-                            // We send the event twice to rapresent both entities perspective
-
-                            let mut scene = self.scenes.remove(i);
-
-                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            scene.scene.on_event(
-                                EngineEvent::CollisionEnter {
-                                    entity: pair.0.clone(),
-                                    other: pair.1.clone(),
-                                },
-                                &mut scene_context,
-                            );
-
-                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
-
-                            scene.scene.on_event(
-                                EngineEvent::CollisionEnter {
-                                    entity: pair.1.clone(),
-                                    other: pair.0.clone(),
-                                },
-                                &mut scene_context,
-                            );
-
-                            self.scenes.insert(i, scene);
-                        }
-                    }
-
-                    for pair in removed_collision {
-                        for i in 0..self.scenes.len() {
-                            let mut scene = self.scenes.remove(i);
-
-                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            scene.scene.on_event(
-                                EngineEvent::CollisionExit {
-                                    entity: pair.0.clone(),
-                                    other: pair.1.clone(),
-                                },
-                                &mut scene_context,
-                            );
-
-                            let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            scene.scene.on_event(
-                                EngineEvent::CollisionExit {
-                                    entity: pair.1.clone(),
-                                    other: pair.0.clone(),
-                                },
-                                &mut scene_context,
-                            );
-
-                            self.scenes.insert(i, scene);
-                        }
-                    }
-
-                    self.clock -= self.physics_update;
-                }
-
-                match state.render() {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        let size = state.window.inner_size();
-                        state.resize(size.width, size.height);
-                    }
-                    Err(e) => {
-                        log::error!("Unable to render {}", e);
-                    }
-                }
-            }
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => state.resize(size.width, size.height),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key,
-                        state: key_state,
-                        ..
-                    },
-                ..
-            } => {
-                for i in 0..self.scenes.len() {
-                    let mut scene = self.scenes.remove(i);
-                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                    scene.scene.on_event(
-                        EngineEvent::Key {
-                            physical_key,
-                            pressed: key_state.is_pressed(),
-                        },
-                        &mut scene_context,
-                    );
-                    self.scenes.insert(i, scene);
-                }
-            }
-
-            WindowEvent::MouseInput {
-                state: button_state,
-                button,
-                ..
-            } => {
-                for i in 0..self.scenes.len() {
-                    let mut scene = self.scenes.remove(i);
-                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                    scene.scene.on_event(
-                        EngineEvent::MouseButton {
-                            button,
-                            pressed: button_state == ElementState::Pressed,
-                        },
-                        &mut scene_context,
-                    );
-                    self.scenes.insert(i, scene);
-                }
-            }
-
-            _ => {}
-        }
-    }
-
-    fn device_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _device_id: winit::event::DeviceId,
-        event: winit::event::DeviceEvent,
-    ) {
-        let state: &mut EngineState = match &mut self.state {
-            Some(canvas) => canvas,
-            None => return,
-        };
-
-        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
-            if state.cursor_grabbed {
-                for i in 0..self.scenes.len() {
-                    let mut scene = self.scenes.remove(i);
-                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                    scene.scene.on_event(
-                        EngineEvent::MouseMotion {
-                            delta_x: delta.0,
-                            delta_y: delta.1,
-                        },
-                        &mut scene_context,
-                    );
-                    self.scenes.insert(i, scene);
-                }
-            }
-        }
-    }
-
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        use winit::window::Fullscreen;
-
-        let mut window_attributes = Window::default_attributes()
-            .with_title(&self.title)
-            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height))
-            .with_resizable(self.resizable);
-
-        if self.fullscreen {
-            window_attributes =
-                window_attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
-
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-
-        let state = pollster::block_on(EngineState::new(window.clone())).unwrap();
-
-        self.state = Some(state);
-    }
-
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: EngineState) {
-        self.state = Some(event);
-    }
-}
-
-pub trait Scene {
-    fn on_init(&mut self, _ctx: &mut SceneContext) {}
-    fn on_update(&mut self, _delta_time: f32, _ctx: &mut SceneContext) {}
-    fn on_event(&mut self, _event: EngineEvent, _ctx: &mut SceneContext) {}
-}
-
-pub struct Runner {
-    main: SceneInstance,
-    width: u32,
-    height: u32,
-    title: String,
-    fullscreen: bool,
-    resizable: bool,
-}
-
-impl Runner {
-    pub fn new(main: impl Scene + 'static) -> Self {
-        Self {
-            main: SceneInstance {
-                scene: Box::new(main),
-                is_active: false,
-            },
-            width: 800,
-            height: 600,
-            title: "WEngine Game".to_string(),
-            fullscreen: false,
-            resizable: true,
-        }
-    }
-
-    pub fn window_width(mut self, width: u32) -> Self {
-        self.width = width;
-        self
-    }
-
-    pub fn window_height(mut self, height: u32) -> Self {
-        self.height = height;
-        self
-    }
-
-    pub fn title(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-
-    pub fn fullscreen(mut self, fullscreen: bool) -> Self {
-        self.fullscreen = fullscreen;
-        self
-    }
-
-    pub fn resizable(mut self, resizable: bool) -> Self {
-        self.resizable = resizable;
-        self
-    }
-
-    pub fn run(self) -> anyhow::Result<()> {
-        env_logger::init();
-
-        let event_loop = EventLoop::with_user_event().build()?;
-        let mut app = App {
-            state: None,
-            scenes: vec![self.main],
-            last_frame_time: std::time::Instant::now(),
-            clock: 0.0,
-            physics_update: 1.0 / 60.0,
-            width: self.width,
-            height: self.height,
-            title: self.title,
-            fullscreen: self.fullscreen,
-            resizable: self.resizable,
-        };
-
-        event_loop.run_app(&mut app)?;
-
-        Ok(())
+        self.renderer.render(
+            &self.meshes,
+            &self.camera.bind_group,
+            &self.lighting.bind_group,
+        )
     }
 }

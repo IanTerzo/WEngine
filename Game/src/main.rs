@@ -1,6 +1,11 @@
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use rand::random_range;
-use wengine::{EngineEvent, Runner, Scene, SceneContext, Transform, entity::EntityBuilder};
+use wengine::{
+    app::Runner,
+    entity::builder::EntityBuilder,
+    scene::{EngineEvent, Scene, SceneContext},
+    transform::Transform,
+};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::{cube::Cube, player::Player};

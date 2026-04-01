@@ -1,7 +1,8 @@
 use nalgebra::{self, UnitQuaternion, Vector3, vector};
 use wengine::{
-    Scene, SceneContext, Transform,
-    entity::{EntityBuilder, EntityHandle},
+    entity::{EntityHandle, builder::EntityBuilder},
+    scene::{Scene, SceneContext},
+    transform::Transform,
 };
 
 pub struct Cube {

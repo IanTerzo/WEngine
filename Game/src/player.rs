@@ -1,7 +1,12 @@
 use wengine::{
-    EngineEvent, Scene, SceneContext, Transform,
-    entity::{EmptyBuilder, EntityBuilder, EntityHandle, EntityRef},
-    model::MeshHandle,
+    entity::{
+        EntityHandle,
+        builder::{EmptyBuilder, EntityBuilder},
+        refs::EntityRef,
+    },
+    mesh::MeshHandle,
+    scene::{EngineEvent, Scene, SceneContext},
+    transform::Transform,
 };
 
 use nalgebra::{self, UnitQuaternion, Vector3, vector};

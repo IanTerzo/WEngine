@@ -1,7 +1,6 @@
-use std::{fs, path::Path};
-
 use anyhow::*;
 use image::GenericImageView;
+use std::{fs, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Texture {
