@@ -2,6 +2,7 @@ use anyhow::{Ok, anyhow};
 pub mod builder;
 pub mod refs;
 pub mod spawn;
+pub mod update;
 
 use crate::{instance::InstanceHandle, lightning::LightHandle, transform::Transform};
 
@@ -62,7 +63,7 @@ pub struct PointLight {
     pub transform: Transform,
     pub children: Vec<Entity>,
     pub color: [f32; 3],
-    pub strenght: f32,
+    pub strength: f32,
     pub instance_handle: Option<InstanceHandle>,
     pub light_handle: LightHandle,
 }

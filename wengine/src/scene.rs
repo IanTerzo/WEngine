@@ -2,8 +2,17 @@ use winit::keyboard::PhysicalKey;
 
 use crate::{
     EngineState,
-    entity::{EntityHandle, builder::EntityBuilder, refs::EntityRef},
-    mesh::MeshHandle,
+    entity::{
+        Entity, EntityHandle,
+        builder::EntityBuilder,
+        get_entity_from_handle,
+        refs::{
+            CameraRef, DynamicBodyRef, EmptyRef, EntityRef, KinematicBodyRef, MeshInstanceRef,
+            PointLightRef, StaticBodyRef,
+        },
+        spawn::SpawnContext,
+    },
+    mesh::{MeshHandle, load_obj},
 };
 
 pub enum EngineEvent {
@@ -29,38 +38,63 @@ pub enum EngineEvent {
     },
 }
 
-pub struct SceneInstance {
-    pub scene: Box<dyn Scene>,
-    pub is_active: bool,
-}
-
-pub struct SceneContext<'a> {
-    core: &'a mut EngineState,
-    scenes: &'a mut Vec<SceneInstance>,
-}
-
 pub trait Scene {
     fn on_init(&mut self, _ctx: &mut SceneContext) {}
     fn on_update(&mut self, _delta_time: f32, _ctx: &mut SceneContext) {}
     fn on_event(&mut self, _event: EngineEvent, _ctx: &mut SceneContext) {}
 }
 
-// User facing abstraction of EngineState
+pub struct SceneInstance {
+    pub scene: Box<dyn Scene>,
+    pub is_active: bool,
+}
+
+pub struct SceneContext<'a> {
+    engine_state: &'a mut EngineState,
+    scenes: &'a mut Vec<SceneInstance>,
+}
+
+// User facing API
 
 impl<'a> SceneContext<'a> {
     pub(crate) fn new(state: &'a mut EngineState, scenes: &'a mut Vec<SceneInstance>) -> Self {
         Self {
-            core: state,
+            engine_state: state,
             scenes,
         }
     }
 
     pub fn get_entity(&mut self, entity_handle: EntityHandle) -> anyhow::Result<EntityRef<'_>> {
-        self.core.get_entity(entity_handle)
+        let entity = get_entity_from_handle(&mut self.engine_state.entities, entity_handle)?;
+        match entity {
+            Entity::StaticBody(e) => Ok(EntityRef::StaticBody(StaticBodyRef { entity: e })),
+            Entity::DynamicBody(e) => Ok(EntityRef::DynamicBody(DynamicBodyRef {
+                entity: e,
+                physics_world: &mut self.engine_state.physics_world,
+            })),
+            Entity::KinematicBody(e) => Ok(EntityRef::KinematicBody(KinematicBodyRef {
+                entity: e,
+                physics_world: &mut self.engine_state.physics_world,
+            })),
+            Entity::MeshInstance(e) => Ok(EntityRef::MeshInstance(MeshInstanceRef { entity: e })),
+            Entity::Camera(e) => Ok(EntityRef::Camera(CameraRef { entity: e })),
+            Entity::Empty(e) => Ok(EntityRef::Empty(EmptyRef { entity: e })),
+            Entity::PointLight(e) => Ok(EntityRef::PointLight(PointLightRef { entity: e })),
+        }
     }
 
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
-        self.core.spawn(entity)
+        SpawnContext {
+            entities: &mut self.engine_state.entities,
+            meshes: &mut self.engine_state.meshes,
+            collider_entity_pairs: &mut self.engine_state.collider_entity_pairs,
+            physics_world: &mut self.engine_state.physics_world,
+            camera: &mut self.engine_state.camera,
+            lighting: &mut self.engine_state.lighting,
+            queue: &self.engine_state.renderer.queue,
+            config: &self.engine_state.renderer.config,
+        }
+        .spawn(entity)
     }
 
     pub fn spawn_scene(&mut self, scene: impl Scene + 'static) {
@@ -71,14 +105,30 @@ impl<'a> SceneContext<'a> {
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
-        self.core.load_obj(path)
+        load_obj(
+            &self.engine_state.renderer.device,
+            &self.engine_state.renderer.queue,
+            &self.engine_state.renderer.texture_bind_group_layout,
+            path,
+            &mut self.engine_state.meshes,
+        )
     }
 
     pub fn grab_cursor(&mut self) {
-        self.core.grab_cursor();
+        self.engine_state.cursor_grabbed = true;
+        let _ = self
+            .engine_state
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+        self.engine_state.window.set_cursor_visible(false);
     }
 
     pub fn release_cursor(&mut self) {
-        self.core.release_cursor();
+        self.engine_state.cursor_grabbed = false;
+        let _ = self
+            .engine_state
+            .window
+            .set_cursor_grab(winit::window::CursorGrabMode::None);
+        self.engine_state.window.set_cursor_visible(true);
     }
 }
