@@ -1,4 +1,4 @@
-use nalgebra::{Isometry, Perspective3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry, Perspective3, Translation3, Vector3};
 
 use crate::{
     camera::CameraState,
@@ -73,7 +73,7 @@ impl<'a> UpdateContext<'a> {
 
                 let iso = rigid_body_calc.position();
                 let position: Vector3<f32> = iso.translation.vector;
-                let rotation = iso.rotation.into_inner();
+                let rotation = iso.rotation;
 
                 // We apply the physics of the parent rigidbody on all children
                 for child in &entity.children {
@@ -107,7 +107,7 @@ impl<'a> UpdateContext<'a> {
 
                 let iso = rigid_body_calc.position();
                 let position: Vector3<f32> = iso.translation.vector;
-                let rotation = iso.rotation.into_inner();
+                let rotation = iso.rotation;
 
                 for child in &entity.children {
                     self.update_entity(
@@ -140,7 +140,7 @@ impl<'a> UpdateContext<'a> {
 
                 let iso = rigid_body_calc.position();
                 let position: Vector3<f32> = iso.translation.vector;
-                let rotation = iso.rotation.into_inner();
+                let rotation = iso.rotation;
 
                 for child in &entity.children {
                     self.update_entity(
@@ -174,15 +174,15 @@ impl<'a> UpdateContext<'a> {
                 self.update_instance(entity.instance_handle, updated_transform);
             }
             Entity::Camera(entity) => {
-                let rotated_offset = UnitQuaternion::from_quaternion(parent_transform.rotation)
+                let rotated_offset = parent_transform
+                    .rotation
                     .transform_vector(&entity.transform.position);
 
                 let camera_position = parent_transform.position + rotated_offset;
 
                 let iso = Isometry::from_parts(
                     Translation3::from(camera_position), // Use the rotated position
-                    UnitQuaternion::from_quaternion(parent_transform.rotation)
-                        * UnitQuaternion::from_quaternion(entity.transform.rotation),
+                    parent_transform.rotation * entity.transform.rotation,
                 );
                 let view = iso.inverse().to_homogeneous();
                 let aspect = self.config.width as f32 / self.config.height as f32;

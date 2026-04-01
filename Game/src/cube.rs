@@ -27,8 +27,7 @@ impl Scene for Cube {
             ctx.spawn(
                 EntityBuilder::dynamic_body(Transform {
                     position: self.position,
-                    rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32)
-                        .into_inner(),
+                    rotation: UnitQuaternion::identity(),
                     scale: vector![1.0, 1.0, 1.0],
                 })
                 .mesh(cube_mesh)
@@ -48,12 +47,11 @@ impl Scene for Cube {
 
             let rot_increment = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 1.0 * delta);
 
-            let current_rot =
-                UnitQuaternion::from_quaternion(cube_entity.entity.transform.rotation);
+            let current_rot = cube_entity.entity.transform.rotation;
 
             let new_rot = current_rot * rot_increment;
 
-            cube_entity.entity.transform.rotation = new_rot.into_inner();
+            cube_entity.entity.transform.rotation = new_rot;
         }
     }
 }

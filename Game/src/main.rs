@@ -1,4 +1,4 @@
-use nalgebra::{self, UnitQuaternion, Vector3, vector};
+use nalgebra::{self, UnitQuaternion, vector};
 use rand::random_range;
 use wengine::{
     app::Runner,
@@ -31,8 +31,7 @@ impl Scene for Main {
         ctx.spawn(
             EntityBuilder::static_body(Transform {
                 position: vector![0.0, -30.0, 0.0],
-                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
-                    .into_inner(),
+                rotation: UnitQuaternion::identity(),
                 scale: vector![40.0, 1.0, 40.0],
             })
             .collider_cuboid(vector![40.0, 1.0, 40.0])
@@ -43,8 +42,7 @@ impl Scene for Main {
         ctx.spawn(
             EntityBuilder::point_light(Transform {
                 position: vector![20.0, -25.5, 0.0],
-                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
-                    .into_inner(),
+                rotation: UnitQuaternion::identity(),
                 scale: vector![0.6, 0.6, 0.6],
             })
             .mesh(cube_mesh),
@@ -53,8 +51,7 @@ impl Scene for Main {
         ctx.spawn(
             EntityBuilder::point_light(Transform {
                 position: vector![-20.0, -25.5, 0.0],
-                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
-                    .into_inner(),
+                rotation: UnitQuaternion::identity(),
                 scale: vector![0.6, 0.6, 0.6],
             })
             .color([0.0, 0.0, 1.0])

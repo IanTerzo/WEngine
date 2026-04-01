@@ -1,4 +1,4 @@
-use nalgebra::{Isometry3, Perspective3, Translation, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Perspective3, Translation};
 use rapier3d::prelude::{Collider, ColliderBuilder, ColliderHandle, RigidBodyHandle};
 use std::collections::HashMap;
 
@@ -124,13 +124,6 @@ impl<'a> SpawnContext<'a> {
         }
     }
 
-    fn to_axis_angle(rotation: nalgebra::Quaternion<f32>) -> Vector3<f32> {
-        let unit = UnitQuaternion::from_quaternion(rotation);
-        unit.axis_angle()
-            .map(|(axis, angle)| axis.into_inner() * angle)
-            .unwrap_or_else(Vector3::zeros)
-    }
-
     fn create_dynamic(
         &mut self,
         root: usize,
@@ -139,7 +132,7 @@ impl<'a> SpawnContext<'a> {
     ) -> Entity {
         let rigid_body = rapier3d::prelude::RigidBodyBuilder::dynamic()
             .translation(body.transform.position)
-            .rotation(Self::to_axis_angle(body.transform.rotation))
+            .rotation(body.transform.rotation.scaled_axis())
             .linvel(body.linear_velocity)
             .angvel(body.angular_velocity)
             .additional_mass(body.mass)
@@ -178,7 +171,7 @@ impl<'a> SpawnContext<'a> {
     fn create_static(&mut self, root: usize, path: Vec<usize>, body: StaticBodyBuilder) -> Entity {
         let rigid_body = rapier3d::prelude::RigidBodyBuilder::fixed()
             .translation(body.transform.position)
-            .rotation(Self::to_axis_angle(body.transform.rotation))
+            .rotation(body.transform.rotation.scaled_axis())
             .build();
 
         let instance_handle = body
@@ -215,7 +208,7 @@ impl<'a> SpawnContext<'a> {
     ) -> Entity {
         let rigid_body = rapier3d::prelude::RigidBodyBuilder::kinematic_position_based()
             .translation(body.transform.position)
-            .rotation(Self::to_axis_angle(body.transform.rotation))
+            .rotation(body.transform.rotation.scaled_axis())
             .linvel(body.linear_velocity)
             .angvel(body.angular_velocity)
             .build();
@@ -266,7 +259,7 @@ impl<'a> SpawnContext<'a> {
     fn create_camera(&mut self, camera: CameraBuilder) -> Entity {
         let iso = Isometry3::from_parts(
             Translation::from(camera.transform.position),
-            UnitQuaternion::from_quaternion(camera.transform.rotation),
+            camera.transform.rotation,
         );
         let view = iso.inverse().to_homogeneous();
         let aspect = self.config.width as f32 / self.config.height as f32;

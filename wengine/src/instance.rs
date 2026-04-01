@@ -1,5 +1,4 @@
 use bytemuck::{Pod, Zeroable};
-use nalgebra::UnitQuaternion;
 use std::mem;
 
 pub const MAX_INSTANCES: usize = 100;
@@ -15,7 +14,9 @@ impl<'a> Instance {
         let model_matrix = self.transform.to_matrix(); // Convert Transform to 4x4 matrix
         InstanceRaw {
             model_matrix: model_matrix.into(),
-            normal: UnitQuaternion::from_quaternion(self.transform.rotation)
+            normal: self
+                .transform
+                .rotation
                 .to_rotation_matrix()
                 .into_inner()
                 .into(), // Cursed

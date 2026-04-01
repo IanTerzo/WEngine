@@ -1,10 +1,5 @@
 use wengine::{
-    entity::{
-        EntityHandle,
-        builder::{EmptyBuilder, EntityBuilder},
-        refs::EntityRef,
-    },
-    mesh::MeshHandle,
+    entity::{EntityHandle, builder::EntityBuilder, refs::EntityRef},
     scene::{EngineEvent, Scene, SceneContext},
     transform::Transform,
 };
@@ -139,51 +134,24 @@ impl Player {
     }
 }
 
-fn create_mesh_entity(meshes: &[MeshHandle], parent_transform: Transform) -> EmptyBuilder {
-    let mut builder = EntityBuilder::empty(parent_transform);
-
-    for &mesh in meshes {
-        builder = builder.add_child(EntityBuilder::mesh_instance(
-            mesh,
-            Transform {
-                position: vector![0.0, 0.0, 0.0],
-                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
-                    .into_inner(),
-                scale: vector![1.0, 1.0, 1.0],
-            },
-        ));
-    }
-
-    builder
-}
-
 impl Scene for Player {
     fn on_init(&mut self, ctx: &mut SceneContext) {
         let player_handle = ctx.spawn(
             EntityBuilder::dynamic_body(Transform {
                 position: vector![0.0, 0.0, 0.0],
-                rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.0f32.to_radians())
-                    .into_inner(),
+                rotation: UnitQuaternion::identity(),
                 scale: vector![1.0, 1.0, 1.0],
             })
             .add_child(
                 EntityBuilder::empty(Transform {
                     position: vector![0.0, 1.8, 0.0],
-                    rotation: UnitQuaternion::from_axis_angle(
-                        &Vector3::y_axis(),
-                        0.0f32.to_radians(),
-                    )
-                    .into_inner(),
+                    rotation: UnitQuaternion::identity(),
                     scale: vector![1.0, 1.0, 1.0],
                 })
                 .add_child(
                     EntityBuilder::camera(Transform {
                         position: vector![0.0, 0.0, 0.0],
-                        rotation: UnitQuaternion::from_axis_angle(
-                            &Vector3::y_axis(),
-                            0.0f32.to_radians(),
-                        )
-                        .into_inner(),
+                        rotation: UnitQuaternion::identity(),
                         scale: vector![1.0, 1.0, 1.0],
                     })
                     .fov(80.0),
@@ -263,7 +231,7 @@ impl Scene for Player {
         // Update view rotation
 
         if let EntityRef::Empty(view) = &mut player.get_child(0).unwrap() {
-            view.entity.transform.rotation = self.camera_controller.get_rotation().into_inner()
+            view.entity.transform.rotation = self.camera_controller.get_rotation()
         }
     }
 
