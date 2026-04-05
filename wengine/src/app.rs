@@ -45,9 +45,10 @@ impl ApplicationHandler<EngineState> for App {
                 let delta = (current_time - self.last_frame_time).as_secs_f32();
                 self.last_frame_time = current_time;
                 self.clock += delta;
+                self.clock = self.clock.min(0.25);
 
                 // We run the physics at a set time but we render at the monitors FPS.
-                if self.clock >= self.physics_update {
+                while self.clock >= self.physics_update {
                     let (new_collisions, removed_collision) = state.update();
 
                     {
@@ -62,7 +63,9 @@ impl ApplicationHandler<EngineState> for App {
                             }
 
                             let mut scene_context = SceneContext::new(state, &mut self.scenes);
-                            scene.scene.on_update(delta, &mut scene_context);
+                            scene
+                                .scene
+                                .on_physics_update(self.physics_update, &mut scene_context);
 
                             self.scenes.insert(i, scene);
                         }
@@ -124,6 +127,22 @@ impl ApplicationHandler<EngineState> for App {
                     }
 
                     self.clock -= self.physics_update;
+                }
+
+                for i in 0..self.scenes.len() {
+                    let mut scene = self.scenes.remove(i);
+
+                    if !scene.is_active {
+                        let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                        scene.scene.on_init(&mut scene_context);
+
+                        scene.is_active = true;
+                    }
+
+                    let mut scene_context = SceneContext::new(state, &mut self.scenes);
+                    scene.scene.on_update(delta, &mut scene_context);
+
+                    self.scenes.insert(i, scene);
                 }
 
                 match state.render() {

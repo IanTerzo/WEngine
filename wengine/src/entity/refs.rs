@@ -126,6 +126,31 @@ impl<'a> DynamicBodyRef<'a> {
         }
     }
 
+    pub fn get_position(&self) -> anyhow::Result<Vector3<f32>> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get(self.entity.rigid_body_handle)
+        {
+            Ok(*body.translation())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
+    pub fn set_position(&mut self, vector: Vector3<f32>) -> anyhow::Result<()> {
+        if let Some(body) = self
+            .physics_world
+            .rigid_body_set
+            .get_mut(self.entity.rigid_body_handle)
+        {
+            body.set_translation(vector, true);
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to find rigidbody associated with entity"))
+        }
+    }
+
     pub fn set_enabled_rotations(
         &mut self,
         enable_x: bool,

@@ -3,7 +3,7 @@ use nalgebra::{Isometry, Perspective3, Translation3, Vector3};
 use crate::{
     camera::CameraState,
     entity::Entity,
-    instance::{InstanceHandle, InstanceRaw, InstanceType},
+    instance::{InstanceHandle, InstanceType},
     lightning::LightingState,
     mesh::MeshData,
     physics::PhysicsWorld,
@@ -29,15 +29,6 @@ impl<'a> UpdateContext<'a> {
                         mesh_data.standard_instances.get_mut(handle.instance_index)
                     {
                         instance.transform = transform;
-
-                        let instance_raw = instance.to_raw();
-                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
-
-                        self.queue.write_buffer(
-                            &mesh_data.standard_instance_buffer,
-                            offset as wgpu::BufferAddress,
-                            bytemuck::cast_slice(&[instance_raw]),
-                        );
                     }
                 }
             }
@@ -46,15 +37,6 @@ impl<'a> UpdateContext<'a> {
                     if let Some(instance) = mesh_data.light_instances.get_mut(handle.instance_index)
                     {
                         instance.transform = transform;
-
-                        let instance_raw = instance.to_raw();
-                        let offset = handle.instance_index * std::mem::size_of::<InstanceRaw>();
-
-                        self.queue.write_buffer(
-                            &mesh_data.light_instance_buffer,
-                            offset as wgpu::BufferAddress,
-                            bytemuck::cast_slice(&[instance_raw]),
-                        );
                     }
                 }
             }

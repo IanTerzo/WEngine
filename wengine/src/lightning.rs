@@ -1,4 +1,4 @@
-const MAX_LIGHTS: usize = 100;
+pub const MAX_LIGHTS: usize = 100;
 
 #[derive(Clone, Debug)]
 pub struct LightHandle(pub usize);

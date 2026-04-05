@@ -37,7 +37,8 @@ impl Scene for Main {
             .collider_cuboid(vector![40.0, 1.0, 40.0])
             .mesh(cube_mesh)
             .tag("walkable"),
-        );
+        )
+        .unwrap();
 
         ctx.spawn(
             EntityBuilder::point_light(Transform {
@@ -46,7 +47,8 @@ impl Scene for Main {
                 scale: vector![0.6, 0.6, 0.6],
             })
             .mesh(cube_mesh),
-        );
+        )
+        .unwrap();
 
         ctx.spawn(
             EntityBuilder::point_light(Transform {
@@ -56,7 +58,8 @@ impl Scene for Main {
             })
             .color([0.0, 0.0, 1.0])
             .mesh(blue_cube_mesh),
-        );
+        )
+        .unwrap();
 
         // Player
 

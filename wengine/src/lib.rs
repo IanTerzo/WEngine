@@ -2,7 +2,7 @@ use crate::{
     camera::CameraState,
     entity::{Entity, EntityHandle, update::UpdateContext},
     lightning::LightingState,
-    mesh::MeshData,
+    mesh::{MeshData, MeshHandle},
     physics::PhysicsWorld,
     renderer::Renderer,
     transform::Transform,
@@ -33,6 +33,7 @@ pub struct EngineState {
     pub physics_world: PhysicsWorld,
     window: Arc<Window>,
     meshes: Vec<MeshData>,
+    mesh_registry: HashMap<String, Vec<MeshHandle>>,
     entities: Vec<Entity>,
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
@@ -56,6 +57,7 @@ impl EngineState {
             physics_world,
             window,
             meshes: vec![],
+            mesh_registry: HashMap::new(),
             entities: vec![],
             collider_entity_pairs: HashMap::new(),
             active_collisions: HashSet::new(),
@@ -135,6 +137,9 @@ impl EngineState {
             update_context.update_entity(entity, Transform::zero());
         }
 
+        // Flush meshes and lights
+
+        self.renderer.flush_meshes(&self.meshes);
         self.lighting.flush(&self.renderer.queue);
 
         // Pass collisions back to App so that the right events can be fired

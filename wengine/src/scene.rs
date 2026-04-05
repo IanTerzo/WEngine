@@ -41,6 +41,7 @@ pub enum EngineEvent {
 pub trait Scene {
     fn on_init(&mut self, _ctx: &mut SceneContext) {}
     fn on_update(&mut self, _delta_time: f32, _ctx: &mut SceneContext) {}
+    fn on_physics_update(&mut self, _delta_time: f32, _ctx: &mut SceneContext) {}
     fn on_event(&mut self, _event: EngineEvent, _ctx: &mut SceneContext) {}
 }
 
@@ -83,7 +84,7 @@ impl<'a> SceneContext<'a> {
         }
     }
 
-    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> EntityHandle {
+    pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> anyhow::Result<EntityHandle> {
         SpawnContext {
             entities: &mut self.engine_state.entities,
             meshes: &mut self.engine_state.meshes,
@@ -105,13 +106,23 @@ impl<'a> SceneContext<'a> {
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
-        load_obj(
+        if let Some(handles) = self.engine_state.mesh_registry.get(path) {
+            return Ok(handles.clone());
+        }
+
+        let handles = load_obj(
             &self.engine_state.renderer.device,
             &self.engine_state.renderer.queue,
             &self.engine_state.renderer.texture_bind_group_layout,
             path,
             &mut self.engine_state.meshes,
-        )
+        )?;
+
+        self.engine_state
+            .mesh_registry
+            .insert(path.to_string(), handles.clone());
+
+        Ok(handles)
     }
 
     pub fn grab_cursor(&mut self) {

@@ -264,4 +264,33 @@ impl Renderer {
             self.is_surface_configured = true;
         }
     }
+
+    pub fn flush_meshes(&self, meshes: &[MeshData]) {
+        for mesh_data in meshes {
+            if !mesh_data.standard_instances.is_empty() {
+                let raw: Vec<InstanceRaw> = mesh_data
+                    .standard_instances
+                    .iter()
+                    .map(|i| i.to_raw())
+                    .collect();
+                self.queue.write_buffer(
+                    &mesh_data.standard_instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&raw),
+                );
+            }
+            if !mesh_data.light_instances.is_empty() {
+                let raw: Vec<InstanceRaw> = mesh_data
+                    .light_instances
+                    .iter()
+                    .map(|i| i.to_raw())
+                    .collect();
+                self.queue.write_buffer(
+                    &mesh_data.light_instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&raw),
+                );
+            }
+        }
+    }
 }

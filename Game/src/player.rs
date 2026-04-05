@@ -136,31 +136,33 @@ impl Player {
 
 impl Scene for Player {
     fn on_init(&mut self, ctx: &mut SceneContext) {
-        let player_handle = ctx.spawn(
-            EntityBuilder::dynamic_body(Transform {
-                position: vector![0.0, 0.0, 0.0],
-                rotation: UnitQuaternion::identity(),
-                scale: vector![1.0, 1.0, 1.0],
-            })
-            .add_child(
-                EntityBuilder::empty(Transform {
-                    position: vector![0.0, 1.8, 0.0],
+        let player_handle = ctx
+            .spawn(
+                EntityBuilder::dynamic_body(Transform {
+                    position: vector![0.0, 0.0, 0.0],
                     rotation: UnitQuaternion::identity(),
                     scale: vector![1.0, 1.0, 1.0],
                 })
                 .add_child(
-                    EntityBuilder::camera(Transform {
-                        position: vector![0.0, 0.0, 0.0],
+                    EntityBuilder::empty(Transform {
+                        position: vector![0.0, 1.8, 0.0],
                         rotation: UnitQuaternion::identity(),
                         scale: vector![1.0, 1.0, 1.0],
                     })
-                    .fov(80.0),
-                ),
+                    .add_child(
+                        EntityBuilder::camera(Transform {
+                            position: vector![0.0, 0.0, 0.0],
+                            rotation: UnitQuaternion::identity(),
+                            scale: vector![1.0, 1.0, 1.0],
+                        })
+                        .fov(80.0),
+                    ),
+                )
+                .collider_capsule(0.9, 0.5)
+                .tag("player_body")
+                .gravity_scale(3.5),
             )
-            .collider_capsule(0.9, 0.5)
-            .tag("player_body")
-            .gravity_scale(3.5),
-        );
+            .unwrap();
 
         ctx.get_entity(player_handle.clone())
             .unwrap()
@@ -175,7 +177,7 @@ impl Scene for Player {
         self.cursor_grabbed = true;
     }
 
-    fn on_update(&mut self, delta: f32, ctx: &mut SceneContext) {
+    fn on_physics_update(&mut self, delta: f32, ctx: &mut SceneContext) {
         let Some(player_handle) = self.player_handle.clone() else {
             return;
         };
@@ -226,6 +228,16 @@ impl Scene for Player {
             player
                 .set_linvel(vector![new_horizontal.x, current_vel.y, new_horizontal.z])
                 .unwrap();
+        }
+
+        // Respawn logic
+
+        let pos = player.get_position().unwrap();
+
+        if pos.y < -100.0 {
+            player.set_position(vector![0.0, 0.0, 0.0]).unwrap();
+            player.set_angvel(vector![0.0, 0.0, 0.0]).unwrap();
+            player.set_linvel(vector![0.0, 0.0, 0.0]).unwrap();
         }
 
         // Update view rotation
