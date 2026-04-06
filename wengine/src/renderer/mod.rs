@@ -215,8 +215,8 @@ impl Renderer {
             for mesh_data in meshes {
                 let mesh = &mesh_data.mesh;
 
-                let standarde_instance_count = mesh_data.standard_instances.len() as u32;
-                if standarde_instance_count != 0 {
+                let standard_instance_count = mesh_data.standard_instances.len() as u32;
+                if standard_instance_count != 0 {
                     rp.set_pipeline(&self.standard_pipeline);
                     rp.set_bind_group(1, camera_bind_group, &[]);
                     rp.set_bind_group(2, light_bind_group, &[]);
@@ -228,7 +228,7 @@ impl Renderer {
 
                     rp.set_bind_group(0, &mesh_data.material.bind_group, &[]);
 
-                    rp.draw_indexed(0..mesh.index_count, 0, 0..standarde_instance_count);
+                    rp.draw_indexed(0..mesh.index_count, 0, 0..standard_instance_count);
                 }
 
                 let light_instance_count = mesh_data.light_instances.len() as u32;
@@ -271,7 +271,7 @@ impl Renderer {
                 let raw: Vec<InstanceRaw> = mesh_data
                     .standard_instances
                     .iter()
-                    .map(|i| i.to_raw())
+                    .map(|i| i.1.to_raw())
                     .collect();
                 self.queue.write_buffer(
                     &mesh_data.standard_instance_buffer,
@@ -283,7 +283,7 @@ impl Renderer {
                 let raw: Vec<InstanceRaw> = mesh_data
                     .light_instances
                     .iter()
-                    .map(|i| i.to_raw())
+                    .map(|i| i.1.to_raw())
                     .collect();
                 self.queue.write_buffer(
                     &mesh_data.light_instance_buffer,

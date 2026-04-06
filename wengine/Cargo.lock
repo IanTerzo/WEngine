@@ -2512,6 +2512,7 @@ dependencies = [
  "nalgebra",
  "pollster",
  "rapier3d",
+ "slab",
  "tobj",
  "wgpu",
  "winit",

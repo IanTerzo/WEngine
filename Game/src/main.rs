@@ -84,6 +84,15 @@ impl Scene for Main {
                             random_range(-5..5) as f32
                         ]));
                     }
+                    KeyCode::KeyX => {
+                        if !pressed {
+                            return;
+                        }
+
+                        for entity_handle in ctx.get_entities_by_tag("cube") {
+                            ctx.delete(entity_handle).unwrap();
+                        }
+                    }
                     _ => {}
                 },
                 _ => {}

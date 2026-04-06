@@ -1,4 +1,5 @@
 use nalgebra::{Isometry, Perspective3, Translation3, Vector3};
+use slab::Slab;
 
 use crate::{
     camera::CameraState,
@@ -12,6 +13,7 @@ use crate::{
 };
 
 pub struct UpdateContext<'a> {
+    pub entities: &'a Slab<Entity>,
     pub meshes: &'a mut Vec<MeshData>,
     pub camera: &'a mut CameraState,
     pub lighting: &'a mut LightingState,
@@ -43,9 +45,10 @@ impl<'a> UpdateContext<'a> {
         }
     }
 
-    pub fn update_entity(&mut self, entity_ref: &Entity, parent_transform: Transform) {
+    pub fn update_entity(&mut self, entity: &Entity, parent_transform: Transform) {
         // We want to update all non rigidbody children with the physics of the parent rigidbody.
-        match &entity_ref {
+
+        match &entity {
             Entity::DynamicBody(entity) => {
                 let rigid_body_calc = self
                     .physics_world
@@ -58,7 +61,8 @@ impl<'a> UpdateContext<'a> {
                 let rotation = iso.rotation;
 
                 // We apply the physics of the parent rigidbody on all children
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(
                         child,
                         Transform {
@@ -91,7 +95,8 @@ impl<'a> UpdateContext<'a> {
                 let position: Vector3<f32> = iso.translation.vector;
                 let rotation = iso.rotation;
 
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(
                         child,
                         Transform {
@@ -124,7 +129,8 @@ impl<'a> UpdateContext<'a> {
                 let position: Vector3<f32> = iso.translation.vector;
                 let rotation = iso.rotation;
 
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(
                         child,
                         Transform {
@@ -149,7 +155,8 @@ impl<'a> UpdateContext<'a> {
             Entity::MeshInstance(entity) => {
                 let updated_transform = parent_transform.transform(&entity.transform);
 
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(child, updated_transform);
                 }
 
@@ -175,7 +182,8 @@ impl<'a> UpdateContext<'a> {
                     .update_view_proj(&self.queue, OPENGL_TO_WGPU_MATRIX * proj * view);
             }
             Entity::Empty(entity) => {
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(child, parent_transform.transform(&entity.transform));
                 }
             }
@@ -187,7 +195,8 @@ impl<'a> UpdateContext<'a> {
                 self.lighting.lights[entity.light_handle.0].color = entity.color;
                 self.lighting.lights[entity.light_handle.0].strength = entity.strength;
 
-                for child in &entity.children {
+                for child_handle in &entity.children {
+                    let child = self.entities.get(child_handle.0).unwrap();
                     self.update_entity(child, updated_transform);
                 }
 

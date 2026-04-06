@@ -1,5 +1,7 @@
 use anyhow::{Ok, anyhow};
+use slab::Slab;
 pub mod builder;
+pub mod delete;
 pub mod refs;
 pub mod spawn;
 pub mod update;
@@ -10,7 +12,8 @@ use crate::{instance::InstanceHandle, lightning::LightHandle, transform::Transfo
 pub struct StaticBody {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
 }
@@ -19,7 +22,8 @@ pub struct StaticBody {
 pub struct DynamicBody {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
 }
@@ -28,7 +32,8 @@ pub struct DynamicBody {
 pub struct KinematicBody {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
     pub instance_handle: Option<InstanceHandle>,
     pub rigid_body_handle: rapier3d::prelude::RigidBodyHandle,
 }
@@ -37,6 +42,7 @@ pub struct KinematicBody {
 pub struct Camera {
     pub tag: Option<String>,
     pub transform: Transform,
+    pub parent: Option<EntityHandle>,
     pub fov: f32,
     pub near: f32,
     pub far: f32,
@@ -46,7 +52,8 @@ pub struct Camera {
 pub struct MeshInstance {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
     pub instance_handle: InstanceHandle,
 }
 
@@ -54,14 +61,16 @@ pub struct MeshInstance {
 pub struct Empty {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PointLight {
     pub tag: Option<String>,
     pub transform: Transform,
-    pub children: Vec<Entity>,
+    pub children: Vec<EntityHandle>,
+    pub parent: Option<EntityHandle>,
     pub color: [f32; 3],
     pub strength: f32,
     pub instance_handle: Option<InstanceHandle>,
@@ -79,38 +88,42 @@ pub enum Entity {
     PointLight(PointLight),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct EntityHandle {
-    root: usize,
-    path: Vec<usize>,
-}
+impl Entity {
+    pub fn set_parent(&mut self, handle: EntityHandle) {
+        match self {
+            Entity::DynamicBody(e) => e.parent = Some(handle),
+            Entity::StaticBody(e) => e.parent = Some(handle),
+            Entity::KinematicBody(e) => e.parent = Some(handle),
+            Entity::MeshInstance(e) => e.parent = Some(handle),
+            Entity::Camera(e) => e.parent = Some(handle),
+            Entity::Empty(e) => e.parent = Some(handle),
+            Entity::PointLight(e) => e.parent = Some(handle),
+        }
+    }
 
-fn children_mut(entity: &mut Entity) -> Option<&mut Vec<Entity>> {
-    match entity {
-        Entity::DynamicBody(e) => Some(&mut e.children),
-        Entity::StaticBody(e) => Some(&mut e.children),
-        Entity::KinematicBody(e) => Some(&mut e.children),
-        Entity::MeshInstance(e) => Some(&mut e.children),
-        Entity::Empty(e) => Some(&mut e.children),
-        Entity::Camera(_) => None, // cameras have no children
-        Entity::PointLight(e) => Some(&mut e.children),
+    pub fn get_parent(&self) -> Option<EntityHandle> {
+        match self {
+            Entity::DynamicBody(e) => e.parent,
+            Entity::StaticBody(e) => e.parent,
+            Entity::KinematicBody(e) => e.parent,
+            Entity::MeshInstance(e) => e.parent,
+            Entity::Camera(e) => e.parent,
+            Entity::Empty(e) => e.parent,
+            Entity::PointLight(e) => e.parent,
+        }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EntityHandle(pub usize);
 
 pub fn get_entity_from_handle<'a>(
-    entities: &'a mut Vec<Entity>,
+    entities: &'a mut Slab<Entity>,
     entity_handle: EntityHandle,
 ) -> anyhow::Result<&'a mut Entity> {
-    let mut entity: &mut Entity = entities
-        .get_mut(entity_handle.root)
-        .ok_or_else(|| anyhow!("Invalid root index: {}", entity_handle.root))?;
+    let entity: &mut Entity = entities
+        .get_mut(entity_handle.0)
+        .ok_or_else(|| anyhow!("Invalid handle with value: {}", entity_handle.0))?;
 
-    for &index in &entity_handle.path {
-        let children =
-            children_mut(entity).ok_or_else(|| anyhow!("Entity in path has no children"))?;
-        entity = children
-            .get_mut(index)
-            .ok_or_else(|| anyhow!("Invalid child index: {}", index))?;
-    }
     Ok(entity)
 }

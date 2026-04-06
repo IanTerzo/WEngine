@@ -32,7 +32,7 @@ impl Scene for Cube {
                 })
                 .mesh(cube_mesh)
                 .collider_cuboid(vector![1.0, 1.0, 1.0])
-                .tag("walkable"),
+                .tag("cube"),
             )
             .ok()
     }

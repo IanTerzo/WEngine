@@ -3,13 +3,15 @@ use nalgebra::{Quaternion, Unit, Vector3};
 
 use crate::{
     entity::{
-        Camera, DynamicBody, Empty, Entity, KinematicBody, MeshInstance, PointLight, StaticBody,
+        Camera, DynamicBody, Empty, EntityHandle, KinematicBody, MeshInstance, PointLight,
+        StaticBody,
     },
     physics::PhysicsWorld,
 };
 
 // Entity references that are passed when using get_entity, holds information from the scene (EngineState)
 
+#[derive(Debug)]
 pub struct StaticBodyRef<'a> {
     pub entity: &'a mut StaticBody,
 }
@@ -65,39 +67,50 @@ impl<'a> EntityRef<'a> {
             _ => Err(anyhow!("EntityRef is not a DynamicBody")),
         }
     }
+
+    pub fn into_kinematicbody(self) -> anyhow::Result<KinematicBodyRef<'a>> {
+        match self {
+            EntityRef::KinematicBody(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a KinematicBody")),
+        }
+    }
+
+    pub fn into_camera(self) -> anyhow::Result<CameraRef<'a>> {
+        match self {
+            EntityRef::Camera(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a Camera")),
+        }
+    }
+
+    pub fn into_mesh_instance(self) -> anyhow::Result<MeshInstanceRef<'a>> {
+        match self {
+            EntityRef::MeshInstance(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a MeshInstance")),
+        }
+    }
+
+    pub fn into_empty(self) -> anyhow::Result<EmptyRef<'a>> {
+        match self {
+            EntityRef::Empty(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a Empty")),
+        }
+    }
+
+    pub fn into_pointlight(self) -> anyhow::Result<PointLightRef<'a>> {
+        match self {
+            EntityRef::PointLight(body) => Ok(body),
+            _ => Err(anyhow!("EntityRef is not a PointLight")),
+        }
+    }
 }
 
 impl<'a> DynamicBodyRef<'a> {
-    pub fn get_child(&'a mut self, n: usize) -> anyhow::Result<EntityRef<'a>> {
-        let child = self
-            .entity
+    pub fn get_child(&'a mut self, n: usize) -> anyhow::Result<EntityHandle> {
+        self.entity
             .children
-            .get_mut(n)
-            .ok_or_else(|| anyhow::anyhow!("Child {} not found", n))?;
-
-        match child {
-            Entity::StaticBody(static_body) => Ok(EntityRef::StaticBody(StaticBodyRef {
-                entity: static_body,
-            })),
-            Entity::DynamicBody(dynamic_body) => Ok(EntityRef::DynamicBody(DynamicBodyRef {
-                entity: dynamic_body,
-                physics_world: self.physics_world,
-            })),
-            Entity::KinematicBody(kinematic_body) => {
-                Ok(EntityRef::KinematicBody(KinematicBodyRef {
-                    entity: kinematic_body,
-                    physics_world: self.physics_world,
-                }))
-            }
-            Entity::Camera(camera) => Ok(EntityRef::Camera(CameraRef { entity: camera })),
-            Entity::MeshInstance(mesh_instance) => Ok(EntityRef::MeshInstance(MeshInstanceRef {
-                entity: mesh_instance,
-            })),
-            Entity::Empty(empty) => Ok(EntityRef::Empty(EmptyRef { entity: empty })),
-            Entity::PointLight(point_light) => Ok(EntityRef::PointLight(PointLightRef {
-                entity: point_light,
-            })),
-        }
+            .get(n)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("Child {} not found", n))
     }
 
     pub fn add_force(&mut self, vector: Vector3<f32>) -> anyhow::Result<()> {

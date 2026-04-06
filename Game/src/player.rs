@@ -242,9 +242,14 @@ impl Scene for Player {
 
         // Update view rotation
 
-        if let EntityRef::Empty(view) = &mut player.get_child(0).unwrap() {
-            view.entity.transform.rotation = self.camera_controller.get_rotation()
-        }
+        let view_handle = player.get_child(0).unwrap();
+        ctx.get_entity(view_handle)
+            .unwrap()
+            .into_empty()
+            .unwrap()
+            .entity
+            .transform
+            .rotation = self.camera_controller.get_rotation();
     }
 
     fn on_event(&mut self, event: EngineEvent, ctx: &mut SceneContext) {
@@ -301,7 +306,8 @@ impl Scene for Player {
                 };
 
                 if tag_self.as_deref() == Some("player_body")
-                    && tag_other.as_deref() == Some("walkable")
+                    && (tag_other.as_deref() == Some("walkable")
+                        || tag_other.as_deref() == Some("cube"))
                 {
                     self.player_controller.is_on_ground = true;
                 }
@@ -320,7 +326,8 @@ impl Scene for Player {
                 };
 
                 if tag_self.as_deref() == Some("player_body")
-                    && tag_other.as_deref() == Some("walkable")
+                    && (tag_other.as_deref() == Some("walkable")
+                        || tag_other.as_deref() == Some("cube"))
                 {
                     self.player_controller.is_on_ground = false;
                 }

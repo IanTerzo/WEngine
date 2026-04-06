@@ -1,5 +1,6 @@
 use crate::instance::{Instance, InstanceRaw, MAX_INSTANCES};
 use crate::texture;
+use slab::Slab;
 use std::{fs::File, io::BufReader, path::Path};
 use wgpu::util::DeviceExt;
 
@@ -22,9 +23,9 @@ pub struct MeshData {
     pub mesh: Mesh,
     pub material: Material,
     pub standard_instance_buffer: wgpu::Buffer,
-    pub standard_instances: Vec<Instance>,
+    pub standard_instances: Slab<Instance>,
     pub light_instance_buffer: wgpu::Buffer,
-    pub light_instances: Vec<Instance>,
+    pub light_instances: Slab<Instance>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -230,9 +231,9 @@ pub fn load_obj(
             mesh: mesh_struct,
             material,
             standard_instance_buffer,
-            standard_instances: Vec::new(),
+            standard_instances: Slab::new(),
             light_instance_buffer,
-            light_instances: Vec::new(),
+            light_instances: Slab::new(),
         });
 
         mesh_handle_list.push(MeshHandle(meshes.len() - 1));

@@ -5,6 +5,7 @@ use crate::{
     entity::{
         Entity, EntityHandle,
         builder::EntityBuilder,
+        delete::DeleteContext,
         get_entity_from_handle,
         refs::{
             CameraRef, DynamicBodyRef, EmptyRef, EntityRef, KinematicBodyRef, MeshInstanceRef,
@@ -87,6 +88,7 @@ impl<'a> SceneContext<'a> {
     pub fn spawn(&mut self, entity: impl Into<EntityBuilder>) -> anyhow::Result<EntityHandle> {
         SpawnContext {
             entities: &mut self.engine_state.entities,
+            root_entities: &mut self.engine_state.root_entities,
             meshes: &mut self.engine_state.meshes,
             collider_entity_pairs: &mut self.engine_state.collider_entity_pairs,
             physics_world: &mut self.engine_state.physics_world,
@@ -96,6 +98,43 @@ impl<'a> SceneContext<'a> {
             config: &self.engine_state.renderer.config,
         }
         .spawn(entity)
+    }
+
+    pub fn delete(&mut self, entity: EntityHandle) -> anyhow::Result<()> {
+        DeleteContext {
+            entities: &mut self.engine_state.entities,
+            root_entities: &mut self.engine_state.root_entities,
+            meshes: &mut self.engine_state.meshes,
+            collider_entity_pairs: &mut self.engine_state.collider_entity_pairs,
+            physics_world: &mut self.engine_state.physics_world,
+            camera: &mut self.engine_state.camera,
+            lighting: &mut self.engine_state.lighting,
+            queue: &self.engine_state.renderer.queue,
+            config: &self.engine_state.renderer.config,
+        }
+        .delete(entity)
+    }
+
+    pub fn get_entities_by_tag(&self, tag: &str) -> Vec<EntityHandle> {
+        let mut result = Vec::new();
+
+        for (index, entity) in &self.engine_state.entities {
+            let entity_tag = match entity {
+                Entity::DynamicBody(e) => &e.tag,
+                Entity::StaticBody(e) => &e.tag,
+                Entity::KinematicBody(e) => &e.tag,
+                Entity::MeshInstance(e) => &e.tag,
+                Entity::Camera(e) => &e.tag,
+                Entity::Empty(e) => &e.tag,
+                Entity::PointLight(e) => &e.tag,
+            };
+
+            if *entity_tag == Some(tag.to_string()) {
+                result.push(EntityHandle(index));
+            }
+        }
+
+        result
     }
 
     pub fn spawn_scene(&mut self, scene: impl Scene + 'static) {

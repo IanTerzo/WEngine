@@ -8,6 +8,7 @@ use crate::{
     transform::Transform,
 };
 use rapier3d::prelude::ColliderHandle;
+use slab::Slab;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -34,7 +35,8 @@ pub struct EngineState {
     window: Arc<Window>,
     meshes: Vec<MeshData>,
     mesh_registry: HashMap<String, Vec<MeshHandle>>,
-    entities: Vec<Entity>,
+    entities: Slab<Entity>,
+    root_entities: Vec<EntityHandle>,
     collider_entity_pairs: HashMap<ColliderHandle, EntityHandle>,
     active_collisions: HashSet<(EntityHandle, EntityHandle)>,
     cursor_grabbed: bool,
@@ -58,7 +60,8 @@ impl EngineState {
             window,
             meshes: vec![],
             mesh_registry: HashMap::new(),
-            entities: vec![],
+            entities: Slab::new(),
+            root_entities: vec![],
             collider_entity_pairs: HashMap::new(),
             active_collisions: HashSet::new(),
             cursor_grabbed: false,
@@ -105,6 +108,10 @@ impl EngineState {
             .active_collisions
             .difference(&current_collisions)
             .cloned()
+            .filter(|(handle1, handle2)| {
+                // Don't count it as a removed collision if the deleted collision is caused by a deleted entity
+                self.entities.get(handle1.0).is_some() && self.entities.get(handle2.0).is_some()
+            })
             .collect();
 
         self.active_collisions = current_collisions;
@@ -125,6 +132,7 @@ impl EngineState {
         // Update entities
 
         let mut update_context = UpdateContext {
+            entities: &self.entities,
             meshes: &mut self.meshes,
             camera: &mut self.camera,
             lighting: &mut self.lighting,
@@ -133,14 +141,12 @@ impl EngineState {
             config: &self.renderer.config,
         };
 
-        for entity in &self.entities {
+        for handle in &self.root_entities {
+            // If the entity doesn't have a parent, meaning its a root entity,
+            // go trough each of its children and apply the parent transform according to the entity type.
+            let entity = &self.entities[handle.0];
             update_context.update_entity(entity, Transform::zero());
         }
-
-        // Flush meshes and lights
-
-        self.renderer.flush_meshes(&self.meshes);
-        self.lighting.flush(&self.renderer.queue);
 
         // Pass collisions back to App so that the right events can be fired
 
@@ -149,6 +155,14 @@ impl EngineState {
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.window.request_redraw();
+
+        // Flush meshes and lights
+
+        self.renderer.flush_meshes(&self.meshes);
+        self.lighting.flush(&self.renderer.queue);
+
+        // Render
+
         self.renderer.render(
             &self.meshes,
             &self.camera.bind_group,
