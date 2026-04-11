@@ -1,6 +1,6 @@
 use wengine::{
     entity::{EntityHandle, builder::EntityBuilder, refs::EntityRef},
-    scene::{EngineEvent, Scene, SceneContext},
+    scene::{EngineEvent, SceneContext},
     transform::Transform,
 };
 
@@ -132,14 +132,12 @@ impl Player {
             cursor_grabbed: false,
         }
     }
-}
 
-impl Scene for Player {
-    fn on_init(&mut self, ctx: &mut SceneContext) {
+    pub fn init(&mut self, ctx: &mut SceneContext) {
         let player_handle = ctx
             .spawn(
                 EntityBuilder::dynamic_body(Transform {
-                    position: vector![0.0, 0.0, 0.0],
+                    position: vector![0.0, 0.0, 10.0],
                     rotation: UnitQuaternion::identity(),
                     scale: vector![1.0, 1.0, 1.0],
                 })
@@ -177,7 +175,7 @@ impl Scene for Player {
         self.cursor_grabbed = true;
     }
 
-    fn on_physics_update(&mut self, delta: f32, ctx: &mut SceneContext) {
+    pub fn on_physics_update(&mut self, delta: f32, ctx: &mut SceneContext) {
         let Some(player_handle) = self.player_handle.clone() else {
             return;
         };
@@ -252,7 +250,7 @@ impl Scene for Player {
             .rotation = self.camera_controller.get_rotation();
     }
 
-    fn on_event(&mut self, event: EngineEvent, ctx: &mut SceneContext) {
+    pub fn on_event(&mut self, event: &EngineEvent, ctx: &mut SceneContext) {
         match event {
             EngineEvent::Key {
                 physical_key,
@@ -260,19 +258,19 @@ impl Scene for Player {
             } => match physical_key {
                 PhysicalKey::Code(code) => match code {
                     KeyCode::KeyW | KeyCode::ArrowUp => {
-                        self.player_controller.is_forward_pressed = pressed;
+                        self.player_controller.is_forward_pressed = *pressed;
                     }
                     KeyCode::KeyA | KeyCode::ArrowLeft => {
-                        self.player_controller.is_left_pressed = pressed;
+                        self.player_controller.is_left_pressed = *pressed;
                     }
                     KeyCode::KeyS | KeyCode::ArrowDown => {
-                        self.player_controller.is_backward_pressed = pressed;
+                        self.player_controller.is_backward_pressed = *pressed;
                     }
                     KeyCode::KeyD | KeyCode::ArrowRight => {
-                        self.player_controller.is_right_pressed = pressed;
+                        self.player_controller.is_right_pressed = *pressed;
                     }
                     KeyCode::Space => {
-                        self.player_controller.is_jump_pressed = pressed;
+                        self.player_controller.is_jump_pressed = *pressed;
                     }
                     KeyCode::Escape => {
                         ctx.release_cursor();
@@ -283,23 +281,23 @@ impl Scene for Player {
                 _ => {}
             },
             EngineEvent::MouseButton { button: _, pressed } => {
-                if pressed && !self.cursor_grabbed {
+                if *pressed && !self.cursor_grabbed {
                     ctx.grab_cursor();
                     self.cursor_grabbed = true;
                 }
             }
             EngineEvent::MouseMotion { delta_x, delta_y } => {
                 if self.cursor_grabbed {
-                    self.camera_controller.process_mouse(delta_x, delta_y);
+                    self.camera_controller.process_mouse(*delta_x, *delta_y);
                 }
             }
             EngineEvent::CollisionEnter { entity, other } => {
-                let tag_self = match ctx.get_entity(entity).unwrap() {
+                let tag_self = match ctx.get_entity(*entity).unwrap() {
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
                 };
 
-                let tag_other = match ctx.get_entity(other).unwrap() {
+                let tag_other = match ctx.get_entity(*other).unwrap() {
                     EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
@@ -314,12 +312,12 @@ impl Scene for Player {
             }
 
             EngineEvent::CollisionExit { entity, other } => {
-                let tag_self = match ctx.get_entity(entity).unwrap() {
+                let tag_self = match ctx.get_entity(*entity).unwrap() {
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),
                 };
 
-                let tag_other = match ctx.get_entity(other).unwrap() {
+                let tag_other = match ctx.get_entity(*other).unwrap() {
                     EntityRef::StaticBody(static_body) => static_body.entity.tag.clone(),
                     EntityRef::DynamicBody(dynamic_body) => dynamic_body.entity.tag.clone(),
                     _ => Some("".to_string()),

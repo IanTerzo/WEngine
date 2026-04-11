@@ -178,6 +178,7 @@ impl<'a> UpdateContext<'a> {
                 let proj =
                     Perspective3::new(aspect, entity.fov.to_radians(), entity.near, entity.far)
                         .to_homogeneous();
+                self.camera.uniform.view_position = camera_position.to_homogeneous().into();
                 self.camera
                     .update_view_proj(&self.queue, OPENGL_TO_WGPU_MATRIX * proj * view);
             }

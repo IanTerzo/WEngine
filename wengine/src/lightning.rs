@@ -1,3 +1,5 @@
+use slab::Slab;
+
 pub const MAX_LIGHTS: usize = 100;
 
 #[derive(Clone, Debug)]
@@ -15,7 +17,7 @@ pub struct LightUniform {
 }
 
 pub struct LightingState {
-    pub lights: Vec<LightUniform>,
+    pub lights: Slab<LightUniform>,
     pub buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
 }
@@ -39,14 +41,18 @@ impl LightingState {
         });
 
         Self {
-            lights: Vec::new(),
+            lights: Slab::new(),
             buffer,
             bind_group,
         }
     }
 
     pub fn flush(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&self.lights));
+        let empty = vec![0u8; std::mem::size_of::<LightUniform>() * MAX_LIGHTS];
+        queue.write_buffer(&self.buffer, 0, &empty);
+
+        let lights: Vec<LightUniform> = self.lights.iter().map(|(_, l)| *l).collect();
+        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&lights));
     }
 }
 

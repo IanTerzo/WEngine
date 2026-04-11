@@ -311,7 +311,7 @@ impl<'a> SpawnContext<'a> {
             ));
         }
 
-        self.lighting.lights.push(LightUniform {
+        let key = self.lighting.lights.insert(LightUniform {
             position: point_light.transform.position.into(),
             _padding: 0.0,
             color: point_light.color,
@@ -319,7 +319,7 @@ impl<'a> SpawnContext<'a> {
             strength: point_light.strength,
             _padding3: [0.0, 0.0, 0.0],
         });
-        let light_handle = LightHandle(self.lighting.lights.len() - 1);
+        let light_handle = LightHandle(key);
 
         let instance_handle = point_light.mesh_handle.map(|mesh_handle| {
             let mesh_data = self.meshes.get_mut(mesh_handle.0).unwrap();

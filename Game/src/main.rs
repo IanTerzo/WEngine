@@ -1,109 +1,33 @@
-use nalgebra::{self, UnitQuaternion, vector};
-use rand::random_range;
+use crate::{level1::Level1, level2::Level2, level3::Level3};
 use wengine::{
     app::Runner,
-    entity::builder::EntityBuilder,
-    scene::{EngineEvent, Scene, SceneContext},
-    transform::Transform,
+    scene::{EngineEvent, SceneContext},
 };
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use crate::{cube::Cube, player::Player};
-
-mod cube;
+mod level1;
+mod level2;
+mod level3;
 mod player;
 
-struct Main {}
+fn handle_scene_switch(event: &EngineEvent, ctx: &mut SceneContext) {
+    if let EngineEvent::Key {
+        physical_key: PhysicalKey::Code(code),
+        pressed: true,
+    } = event
+    {
+        match code {
+            KeyCode::Digit1 => ctx.switch_scene(Level1::new()),
+            KeyCode::Digit2 => ctx.switch_scene(Level2::new()),
+            KeyCode::Digit3 => ctx.switch_scene(Level3::new()),
 
-impl Main {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Scene for Main {
-    fn on_init(&mut self, ctx: &mut SceneContext) {
-        // World
-
-        let cube_mesh = ctx.load_obj("assets/cube.obj").unwrap()[0];
-        let blue_cube_mesh = ctx.load_obj("assets/blue_cube.obj").unwrap()[0];
-
-        ctx.spawn(
-            EntityBuilder::static_body(Transform {
-                position: vector![0.0, -30.0, 0.0],
-                rotation: UnitQuaternion::identity(),
-                scale: vector![40.0, 1.0, 40.0],
-            })
-            .collider_cuboid(vector![40.0, 1.0, 40.0])
-            .mesh(cube_mesh)
-            .tag("walkable"),
-        )
-        .unwrap();
-
-        ctx.spawn(
-            EntityBuilder::point_light(Transform {
-                position: vector![20.0, -25.5, 0.0],
-                rotation: UnitQuaternion::identity(),
-                scale: vector![0.6, 0.6, 0.6],
-            })
-            .mesh(cube_mesh),
-        )
-        .unwrap();
-
-        ctx.spawn(
-            EntityBuilder::point_light(Transform {
-                position: vector![-20.0, -25.5, 0.0],
-                rotation: UnitQuaternion::identity(),
-                scale: vector![0.6, 0.6, 0.6],
-            })
-            .color([0.0, 0.0, 1.0])
-            .mesh(blue_cube_mesh),
-        )
-        .unwrap();
-
-        // Player
-
-        ctx.spawn_scene(Player::new());
-    }
-
-    fn on_event(&mut self, event: EngineEvent, ctx: &mut SceneContext) {
-        match event {
-            EngineEvent::Key {
-                physical_key,
-                pressed,
-            } => match physical_key {
-                PhysicalKey::Code(code) => match code {
-                    KeyCode::KeyQ => {
-                        if !pressed {
-                            return;
-                        }
-
-                        ctx.spawn_scene(Cube::new(vector![
-                            random_range(-5..5) as f32,
-                            0.0,
-                            random_range(-5..5) as f32
-                        ]));
-                    }
-                    KeyCode::KeyX => {
-                        if !pressed {
-                            return;
-                        }
-
-                        for entity_handle in ctx.get_entities_by_tag("cube") {
-                            ctx.delete(entity_handle).unwrap();
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            },
             _ => {}
         }
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    Runner::new(Main::new())
+    Runner::new(Level1::new())
         .window_width(1280)
         .window_height(720)
         .title("First person controller")

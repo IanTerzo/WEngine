@@ -46,23 +46,21 @@ pub trait Scene {
     fn on_event(&mut self, _event: EngineEvent, _ctx: &mut SceneContext) {}
 }
 
-pub struct SceneInstance {
-    pub scene: Box<dyn Scene>,
-    pub is_active: bool,
-}
-
 pub struct SceneContext<'a> {
     engine_state: &'a mut EngineState,
-    scenes: &'a mut Vec<SceneInstance>,
+    pending_scene: &'a mut Option<Box<dyn Scene>>,
 }
 
 // User facing API
 
 impl<'a> SceneContext<'a> {
-    pub(crate) fn new(state: &'a mut EngineState, scenes: &'a mut Vec<SceneInstance>) -> Self {
+    pub(crate) fn new(
+        state: &'a mut EngineState,
+        pending_scene: &'a mut Option<Box<dyn Scene>>,
+    ) -> Self {
         Self {
             engine_state: state,
-            scenes,
+            pending_scene,
         }
     }
 
@@ -100,7 +98,7 @@ impl<'a> SceneContext<'a> {
         .spawn(entity)
     }
 
-    pub fn delete(&mut self, entity: EntityHandle) -> anyhow::Result<()> {
+    pub fn delete(&mut self, entity_handle: EntityHandle) -> anyhow::Result<()> {
         DeleteContext {
             entities: &mut self.engine_state.entities,
             root_entities: &mut self.engine_state.root_entities,
@@ -112,7 +110,7 @@ impl<'a> SceneContext<'a> {
             queue: &self.engine_state.renderer.queue,
             config: &self.engine_state.renderer.config,
         }
-        .delete(entity)
+        .delete(entity_handle)
     }
 
     pub fn get_entities_by_tag(&self, tag: &str) -> Vec<EntityHandle> {
@@ -137,11 +135,8 @@ impl<'a> SceneContext<'a> {
         result
     }
 
-    pub fn spawn_scene(&mut self, scene: impl Scene + 'static) {
-        self.scenes.push(SceneInstance {
-            scene: Box::new(scene),
-            is_active: false,
-        });
+    pub fn switch_scene(&mut self, scene: impl Scene + 'static) {
+        *self.pending_scene = Some(Box::new(scene));
     }
 
     pub fn load_obj(&mut self, path: &str) -> anyhow::Result<Vec<MeshHandle>> {
