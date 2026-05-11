@@ -1,4 +1,4 @@
-use crate::{level1::Level1, level2::Level2, level3::Level3};
+use crate::{level1::Level1, level2::Level2, level3::Level3, level4::Level4};
 use wengine::{
     app::Runner,
     scene::{EngineEvent, SceneContext},
@@ -8,6 +8,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 mod level1;
 mod level2;
 mod level3;
+mod level4;
 mod player;
 
 fn handle_scene_switch(event: &EngineEvent, ctx: &mut SceneContext) {
@@ -20,6 +21,7 @@ fn handle_scene_switch(event: &EngineEvent, ctx: &mut SceneContext) {
             KeyCode::Digit1 => ctx.switch_scene(Level1::new()),
             KeyCode::Digit2 => ctx.switch_scene(Level2::new()),
             KeyCode::Digit3 => ctx.switch_scene(Level3::new()),
+            KeyCode::Digit4 => ctx.switch_scene(Level4::new()),
 
             _ => {}
         }
